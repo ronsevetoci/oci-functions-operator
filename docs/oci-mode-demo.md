@@ -158,3 +158,17 @@ kubectl get events \
 ```
 
 If invocation fails, `status.lastError` and the per-payload `error` field should distinguish common cases such as authentication errors, endpoint/network errors, missing function OCID, timeouts, and non-2xx OCI responses.
+
+## 7. Validate Operator UX
+
+After the run, capture notes in [validation-notes.md](validation-notes.md).
+
+Checklist:
+
+- `kubectl get functions,functionjobs` shows useful phase and counts without requiring YAML output.
+- `kubectl describe functionjob oci-hello-job` includes readable conditions and events.
+- `status.lastOciRequestId` or per-payload `ociRequestId` is populated after an OCI call.
+- Successful payloads include an `invocationId`.
+- Failures include a concise, actionable `status.lastError` and per-payload `error`.
+- Missing `spec.functionId`, missing endpoint, auth, timeout, endpoint, and non-2xx failures are distinguishable.
+- The demo steps felt repeatable without hidden local assumptions.

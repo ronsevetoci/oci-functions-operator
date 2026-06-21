@@ -1,0 +1,17 @@
+namespace: oci-functions-operator-system
+
+resources:
+- ../../default
+
+configMapGenerator:
+- name: oci-functions-operator-oci-mode
+  literals:
+  - INVOKER_MODE=oci
+  - OCI_CONFIG_PROFILE=DEFAULT
+  - OCI_FUNCTIONS_INVOKE_ENDPOINT=https://replace-with-function-invoke-endpoint
+
+patches:
+- path: manager-oci-env-patch.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true

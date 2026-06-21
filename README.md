@@ -5,6 +5,7 @@ Kubernetes operator for managing and invoking OCI Functions through Kubernetes-n
 ## Documentation
 
 - [Design overview](docs/design.md)
+- [OKE deployment guide](docs/oke-deployment.md)
 - [OCI mode end-to-end demo](docs/oci-mode-demo.md)
 
 ## Invoker Modes

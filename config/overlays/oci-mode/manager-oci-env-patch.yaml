@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        env:
+        - name: INVOKER_MODE
+          value: null
+          valueFrom:
+            configMapKeyRef:
+              name: oci-functions-operator-oci-mode
+              key: INVOKER_MODE
+        - name: OCI_CONFIG_FILE
+          value: /oci/config/config
+        - name: OCI_CONFIG_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              name: oci-functions-operator-oci-mode
+              key: OCI_CONFIG_PROFILE
+        - name: OCI_FUNCTIONS_INVOKE_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: oci-functions-operator-oci-mode
+              key: OCI_FUNCTIONS_INVOKE_ENDPOINT
+        volumeMounts:
+        - name: oci-config
+          mountPath: /oci/config
+          readOnly: true
+      volumes:
+      - name: oci-config
+        secret:
+          secretName: oci-functions-operator-oci-config
