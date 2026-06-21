@@ -1,0 +1,12 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionJob
+metadata:
+  name: managed-hello-job
+spec:
+  functionRef:
+    name: desired-hello
+  payload:
+    message: hello from managed function mode
+    requestId: managed-sample-001
+  parallelism: 1
+  retryLimit: 1

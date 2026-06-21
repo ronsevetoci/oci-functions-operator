@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/oracle/oci-functions-operator/internal/invoker"
+	"github.com/oracle/oci-functions-operator/internal/lifecycle"
 )
 
 const (
@@ -18,6 +19,10 @@ const (
 
 var newOCIInvoker = func() (invoker.Interface, error) {
 	return invoker.NewOCIFromEnvironment()
+}
+
+var newOCILifecycleManager = func() (lifecycle.Manager, error) {
+	return lifecycle.NewOCIFromEnvironment()
 }
 
 func selectInvoker(mode string) (invoker.Interface, string, error) {
@@ -37,5 +42,21 @@ func selectInvoker(mode string) (invoker.Interface, string, error) {
 		return selectedInvoker, normalizedMode, nil
 	default:
 		return nil, normalizedMode, fmt.Errorf("unsupported %s %q; supported values are %q and %q", invokerModeEnv, mode, invokerModeFake, invokerModeOCI)
+	}
+}
+
+func selectLifecycleManager(mode string) (lifecycle.Manager, error) {
+	normalizedMode := strings.ToLower(strings.TrimSpace(mode))
+	if normalizedMode == "" {
+		normalizedMode = invokerModeFake
+	}
+
+	switch normalizedMode {
+	case invokerModeFake:
+		return nil, nil
+	case invokerModeOCI:
+		return newOCILifecycleManager()
+	default:
+		return nil, fmt.Errorf("unsupported %s %q; supported values are %q and %q", invokerModeEnv, mode, invokerModeFake, invokerModeOCI)
 	}
 }

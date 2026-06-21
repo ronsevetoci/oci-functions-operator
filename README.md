@@ -15,7 +15,7 @@ The manager selects its function invoker with the `INVOKER_MODE` environment var
 Supported values:
 
 - `fake`: local deterministic invoker. This is the default.
-- `oci`: OCI Go SDK-backed invoker for existing OCI Functions.
+- `oci`: OCI Go SDK-backed lifecycle and invocation for OCI Functions.
 
 When `INVOKER_MODE=oci`, `OCI_AUTH_MODE` selects OCI SDK authentication:
 
@@ -72,8 +72,7 @@ OCI mode defaults to OKE Workload Identity when `OCI_AUTH_MODE` is unset. For lo
 - The OCI config file defaults to `$HOME/.oci/config`.
 - `OCI_CONFIG_FILE` can point at a different config file.
 - `OCI_CONFIG_PROFILE` can select a non-`DEFAULT` profile.
-- The selected config/profile must have permission to invoke the target OCI Function.
-- `OCI_FUNCTIONS_INVOKE_ENDPOINT` must be set to the existing function's invoke endpoint, without an API path. You can find this as the function `invokeEndpoint` in OCI.
+- The selected config/profile must have permission to manage or invoke the target OCI Function resources.
 
 Example environment:
 
@@ -82,7 +81,6 @@ export INVOKER_MODE=oci
 export OCI_AUTH_MODE=config
 export OCI_CONFIG_FILE="$HOME/.oci/config"
 export OCI_CONFIG_PROFILE=DEFAULT
-export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"
 ```
 
 Then run:
@@ -91,7 +89,7 @@ Then run:
 go run ./cmd
 ```
 
-`Function` resources for OCI mode should point at an existing OCI Function OCID with `spec.functionId`:
+Existing-mode `Function` resources point at an existing OCI Function OCID and carry that function's invoke endpoint in `spec.invokeEndpoint`:
 
 ```yaml
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -99,7 +97,30 @@ kind: Function
 metadata:
   name: existing-hello
 spec:
+  mode: Existing
   functionId: ocid1.fnfunc.oc1.iad.exampleuniqueid
+  invokeEndpoint: https://functions.us-ashburn-1.oci.oraclecloud.com
+```
+
+Managed-mode `Function` resources declare desired OCI Functions state. The controller creates or updates the OCI application/function, then writes `status.functionId` and `status.invokeEndpoint`:
+
+```yaml
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: managed-hello
+spec:
+  mode: Managed
+  config:
+    region: me-jeddah-1
+    compartmentId: ocid1.compartment.oc1..exampleuniqueid
+    applicationName: oci-functions-operator-demo
+    subnetIds:
+    - ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid
+    displayName: managed-hello
+    image: me-jeddah-1.ocir.io/example/functions/hello:latest
+    memoryInMBs: 128
+    timeoutInSeconds: 30
 ```
 
 Create a `FunctionJob` that references the `Function` and supplies inline JSON payloads:

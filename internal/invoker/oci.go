@@ -21,8 +21,6 @@ import (
 )
 
 const (
-	// EnvOCIFunctionsInvokeEndpoint is the endpoint used by the OCI Functions invoke client.
-	EnvOCIFunctionsInvokeEndpoint = "OCI_FUNCTIONS_INVOKE_ENDPOINT"
 	// EnvOCIAuthMode selects the OCI SDK auth provider used in OCI invoker mode.
 	EnvOCIAuthMode = "OCI_AUTH_MODE"
 	// EnvOCIConfigProfile optionally selects a profile from the OCI config file.
@@ -48,7 +46,6 @@ type configFileProviderFactory func() common.ConfigurationProvider
 
 // OCIOptions configures an OCI-backed invoker.
 type OCIOptions struct {
-	InvokeEndpoint                  string
 	AuthMode                        string
 	ConfigProvider                  common.ConfigurationProvider
 	WorkloadIdentityProviderFactory workloadIdentityProviderFactory
@@ -58,10 +55,11 @@ type OCIOptions struct {
 
 // OCI invokes OCI Functions through the OCI Go SDK.
 type OCI struct {
-	client functionsInvokeClient
+	configProvider common.ConfigurationProvider
+	clientFactory  functionsInvokeClientFactory
 }
 
-// RequiresFunctionID reports that OCI mode requires Function.spec.functionId.
+// RequiresFunctionID reports that OCI mode requires a resolved OCI Function OCID.
 func (o *OCI) RequiresFunctionID() bool {
 	return true
 }
@@ -69,19 +67,14 @@ func (o *OCI) RequiresFunctionID() bool {
 // NewOCIFromEnvironment constructs an OCI invoker from OCI-related environment variables.
 func NewOCIFromEnvironment() (*OCI, error) {
 	return NewOCI(OCIOptions{
-		InvokeEndpoint: os.Getenv(EnvOCIFunctionsInvokeEndpoint),
-		AuthMode:       os.Getenv(EnvOCIAuthMode),
+		AuthMode: os.Getenv(EnvOCIAuthMode),
 	})
 }
 
 // NewOCI constructs an OCI invoker.
 func NewOCI(options OCIOptions) (*OCI, error) {
-	endpoint, err := normalizeInvokeEndpoint(options.InvokeEndpoint)
-	if err != nil {
-		return nil, err
-	}
-
 	configProvider := options.ConfigProvider
+	var err error
 	if configProvider == nil {
 		configProvider, err = ociConfigProviderForAuthMode(options)
 		if err != nil {
@@ -94,12 +87,10 @@ func NewOCI(options OCIOptions) (*OCI, error) {
 		clientFactory = newFunctionsInvokeClient
 	}
 
-	client, err := clientFactory(configProvider, endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("configure OCI Functions invoke client: %w", err)
-	}
-
-	return &OCI{client: client}, nil
+	return &OCI{
+		configProvider: configProvider,
+		clientFactory:  clientFactory,
+	}, nil
 }
 
 func newFunctionsInvokeClient(configProvider common.ConfigurationProvider, endpoint string) (functionsInvokeClient, error) {
@@ -162,34 +153,42 @@ func ociConfigProviderFromEnvironment() common.ConfigurationProvider {
 func normalizeInvokeEndpoint(value string) (string, error) {
 	endpoint := strings.TrimSpace(value)
 	if endpoint == "" {
-		return "", fmt.Errorf("%s is required when INVOKER_MODE=oci", EnvOCIFunctionsInvokeEndpoint)
+		return "", fmt.Errorf("target invoke endpoint is required in OCI mode")
 	}
 
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return "", fmt.Errorf("invalid %s %q: %w", EnvOCIFunctionsInvokeEndpoint, endpoint, err)
+		return "", fmt.Errorf("invalid target invoke endpoint %q: %w", endpoint, err)
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return "", fmt.Errorf("invalid %s %q: endpoint must start with https:// or http://", EnvOCIFunctionsInvokeEndpoint, endpoint)
+		return "", fmt.Errorf("invalid target invoke endpoint %q: endpoint must start with https:// or http://", endpoint)
 	}
 	if parsed.Host == "" {
-		return "", fmt.Errorf("invalid %s %q: endpoint must include a host", EnvOCIFunctionsInvokeEndpoint, endpoint)
+		return "", fmt.Errorf("invalid target invoke endpoint %q: endpoint must include a host", endpoint)
 	}
 	if parsed.Path != "" && parsed.Path != "/" {
-		return "", fmt.Errorf("invalid %s %q: endpoint must not include a path; the OCI SDK adds the Functions API path", EnvOCIFunctionsInvokeEndpoint, endpoint)
+		return "", fmt.Errorf("invalid target invoke endpoint %q: endpoint must not include a path; the OCI SDK adds the Functions API path", endpoint)
 	}
 
 	return strings.TrimRight(endpoint, "/"), nil
 }
 
-// Invoke invokes an existing OCI Function by OCID.
+// Invoke invokes an OCI Function by OCID and per-function invoke endpoint.
 func (o *OCI) Invoke(ctx context.Context, request Request) (Response, error) {
 	functionID := strings.TrimSpace(request.Target.FunctionOCID)
 	if functionID == "" {
 		return Response{}, fmt.Errorf("oci invoker requires target function OCID")
 	}
-	if o == nil || o.client == nil {
+	if o == nil || o.configProvider == nil || o.clientFactory == nil {
 		return Response{}, fmt.Errorf("oci invoker is not configured")
+	}
+	endpoint, err := normalizeInvokeEndpoint(request.Target.InvokeEndpoint)
+	if err != nil {
+		return Response{}, err
+	}
+	client, err := o.clientFactory(o.configProvider, endpoint)
+	if err != nil {
+		return Response{}, fmt.Errorf("configure OCI Functions invoke client for endpoint %s: %w", endpoint, err)
 	}
 
 	ociRequest := ocifunctions.InvokeFunctionRequest{
@@ -200,7 +199,7 @@ func (o *OCI) Invoke(ctx context.Context, request Request) (Response, error) {
 		ociRequest.InvokeFunctionBody = io.NopCloser(bytes.NewReader(request.Body))
 	}
 
-	ociResponse, err := o.client.InvokeFunction(ctx, ociRequest)
+	ociResponse, err := client.InvokeFunction(ctx, ociRequest)
 	response := responseFromOCI(ociResponse)
 	if err != nil {
 		if response.OCIRequestID == "" {

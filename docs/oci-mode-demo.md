@@ -1,19 +1,20 @@
 # OCI Mode End-to-End Demo
 
-This demo runs the manager locally with `INVOKER_MODE=oci` and `OCI_AUTH_MODE=config`, then invokes an existing OCI Function through a `FunctionJob`.
+This demo runs the manager locally with `INVOKER_MODE=oci` and `OCI_AUTH_MODE=config`. You can either reference an existing OCI Function or let the operator manage an OCI Functions application/function.
 
 ## Prerequisites
 
 - A Kubernetes cluster reachable by your current `kubectl` context.
-- OCI CLI configured for the same tenancy/profile you want the local manager to use.
-- An existing OCI Function that can be invoked by that profile.
-- Permission for the OCI principal to invoke the target function.
+- OCI CLI configured for the tenancy/profile you want the local manager to use.
+- Permission for that OCI principal to manage OCI Functions applications/functions and invoke functions in the target compartment.
+- For existing mode: an existing OCI Function OCID and its invoke endpoint.
+- For managed mode: a compartment OCID, subnet OCIDs, and a function image in OCIR or another registry OCI Functions can pull.
 
-## 1. Create Or Identify An Existing OCI Function
+## 1. Choose A Function Mode
 
-This operator currently invokes existing OCI Functions. You can create one through the OCI Console, the Fn Project tooling, or your existing deployment pipeline.
+### Existing Function Mode
 
-To identify an existing function with OCI CLI:
+Identify an existing function:
 
 ```sh
 export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
@@ -35,50 +36,53 @@ oci fn function list \
   --output table
 ```
 
-Set the target function OCID:
+Set the existing function OCID and endpoint:
 
 ```sh
 export FUNCTION_OCID="ocid1.fnfunc.oc1.iad.exampleuniqueid"
-```
-
-## 2. Find The Invoke Endpoint
-
-The OCI Go SDK Functions invoke client needs the function invoke endpoint. Fetch it from the existing function:
-
-```sh
-export OCI_FUNCTIONS_INVOKE_ENDPOINT="$(
+export FUNCTION_INVOKE_ENDPOINT="$(
   oci fn function get \
     --function-id "$FUNCTION_OCID" \
     --query 'data."invoke-endpoint"' \
     --raw-output
 )"
-
-echo "$OCI_FUNCTIONS_INVOKE_ENDPOINT"
 ```
 
-The value should be an HTTPS base URL and should not include `/20181201` or another API path.
+The endpoint must be an HTTPS base URL and must not include `/20181201` or another API path.
 
-## 3. Set Local Config Auth Environment
+### Managed Function Mode
 
-For local development, use explicit config-file auth. `$HOME/.oci/config` and the `DEFAULT` profile are enough when configured correctly.
+Set the desired managed function inputs. This example uses Jeddah with the OCI region identifier `me-jeddah-1`:
+
+```sh
+export REGION="me-jeddah-1"
+export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
+export SUBNET_OCID="ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"
+export FUNCTION_IMAGE="me-jeddah-1.ocir.io/<namespace>/functions/hello:latest"
+```
+
+The operator will ensure the OCI Functions application exists, ensure the function exists, update image/memory/timeout/config when they drift, and populate `Function.status.functionId` plus `Function.status.invokeEndpoint`.
+
+## 2. Set Local Config Auth Environment
+
+For local development outside OKE, use config-file auth:
 
 ```sh
 export INVOKER_MODE=oci
 export OCI_AUTH_MODE=config
 export OCI_CONFIG_FILE="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
 export OCI_CONFIG_PROFILE="${OCI_CONFIG_PROFILE:-DEFAULT}"
-export OCI_FUNCTIONS_INVOKE_ENDPOINT="$OCI_FUNCTIONS_INVOKE_ENDPOINT"
 ```
 
-`OCI_AUTH_MODE=config` is the local development path. In OKE, leave config files and PEM keys out of the pod and use `OCI_AUTH_MODE=workload`; see [oke-deployment.md](oke-deployment.md).
+`OCI_AUTH_MODE=config` is the local development path. In OKE, use `OCI_AUTH_MODE=workload`; see [oke-deployment.md](oke-deployment.md).
 
-Validate the OCI CLI can see the function with the same profile:
+Validate the OCI CLI can reach the target compartment/profile:
 
 ```sh
-oci fn function get --function-id "$FUNCTION_OCID"
+oci iam compartment get --compartment-id "$COMPARTMENT_OCID"
 ```
 
-## 4. Install CRDs And Run The Manager Locally
+## 3. Install CRDs And Run The Manager Locally
 
 ```sh
 make generate
@@ -93,13 +97,12 @@ INVOKER_MODE=oci \
 OCI_AUTH_MODE=config \
 OCI_CONFIG_FILE="$OCI_CONFIG_FILE" \
 OCI_CONFIG_PROFILE="$OCI_CONFIG_PROFILE" \
-OCI_FUNCTIONS_INVOKE_ENDPOINT="$OCI_FUNCTIONS_INVOKE_ENDPOINT" \
 go run ./cmd
 ```
 
-## 5. Submit A Function And FunctionJob
+## 4. Submit A Function
 
-In another terminal, create a `Function` that references the existing OCI Function by `spec.functionId`:
+### Existing Function
 
 ```sh
 cat <<EOF | kubectl apply -f -
@@ -108,21 +111,72 @@ kind: Function
 metadata:
   name: oci-existing-hello
 spec:
+  mode: Existing
   functionId: ${FUNCTION_OCID}
+  invokeEndpoint: ${FUNCTION_INVOKE_ENDPOINT}
 EOF
 ```
 
-Create a `FunctionJob` with a small inline JSON payload:
+### Managed Function
 
 ```sh
-cat <<'EOF' | kubectl apply -f -
+cat <<EOF | kubectl apply -f -
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: oci-managed-hello
+spec:
+  mode: Managed
+  config:
+    region: ${REGION}
+    compartmentId: ${COMPARTMENT_OCID}
+    applicationName: oci-functions-operator-demo
+    subnetIds:
+    - ${SUBNET_OCID}
+    displayName: oci-managed-hello
+    image: ${FUNCTION_IMAGE}
+    memoryInMBs: 128
+    timeoutInSeconds: 30
+    config:
+      LOG_LEVEL: info
+EOF
+```
+
+Wait for the `Function` to become Ready:
+
+```sh
+kubectl get functions
+kubectl get function <function-resource-name> -o yaml
+```
+
+For managed mode, look for:
+
+- `status.applicationId`
+- `status.functionId`
+- `status.invokeEndpoint`
+- `status.conditions[?(@.type=="Ready")]`
+
+## 5. Submit A FunctionJob
+
+Set the function name for the mode you chose:
+
+```sh
+export FUNCTION_RESOURCE_NAME="oci-existing-hello"
+# or:
+# export FUNCTION_RESOURCE_NAME="oci-managed-hello"
+```
+
+Create a job:
+
+```sh
+cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
 kind: FunctionJob
 metadata:
   name: oci-hello-job
 spec:
   functionRef:
-    name: oci-existing-hello
+    name: ${FUNCTION_RESOURCE_NAME}
   payloads:
   - message: hello from oci mode
     requestId: demo-001
@@ -161,7 +215,7 @@ kubectl get events \
   --sort-by=.lastTimestamp
 ```
 
-If invocation fails, `status.lastError` and the per-payload `error` field should distinguish common cases such as authentication errors, endpoint/network errors, missing function OCID, timeouts, and non-2xx OCI responses.
+If invocation fails, `status.lastError` and the per-payload `error` field should distinguish common cases such as authentication errors, endpoint/network errors, missing function OCID, missing invoke endpoint, timeouts, and non-2xx OCI responses.
 
 ## 7. Validate Operator UX
 
@@ -170,9 +224,12 @@ After the run, capture notes in [validation-notes.md](validation-notes.md).
 Checklist:
 
 - `kubectl get functions,functionjobs` shows useful phase and counts without requiring YAML output.
+- Existing mode reports Ready only when `spec.functionId` and `spec.invokeEndpoint` are set.
+- Managed mode reports `status.applicationId`, `status.functionId`, and `status.invokeEndpoint` before jobs invoke.
+- A `FunctionJob` that references a non-Ready `Function` fails clearly without invoking.
 - `kubectl describe functionjob oci-hello-job` includes readable conditions and events.
 - `status.lastOciRequestId` or per-payload `ociRequestId` is populated after an OCI call.
 - Successful payloads include an `invocationId`.
 - Failures include a concise, actionable `status.lastError` and per-payload `error`.
-- Missing `spec.functionId`, missing endpoint, auth, timeout, endpoint, and non-2xx failures are distinguishable.
+- Auth, timeout, endpoint, function OCID, and non-2xx failures are distinguishable.
 - The demo steps felt repeatable without hidden local assumptions.

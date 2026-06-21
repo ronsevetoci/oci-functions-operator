@@ -27,7 +27,7 @@ func TestNormalizeInvokeEndpoint(t *testing.T) {
 	}{
 		{
 			name:      "missing",
-			wantError: EnvOCIFunctionsInvokeEndpoint + " is required",
+			wantError: "target invoke endpoint is required",
 		},
 		{
 			name:      "missing scheme",
@@ -73,25 +73,16 @@ func TestNormalizeInvokeEndpoint(t *testing.T) {
 	}
 }
 
-func TestNewOCIRequiresEndpointBeforeConfig(t *testing.T) {
-	_, err := NewOCI(OCIOptions{})
-	if err == nil {
-		t.Fatalf("NewOCI returned nil error, want endpoint error")
-	}
-	if !strings.Contains(err.Error(), EnvOCIFunctionsInvokeEndpoint) {
-		t.Fatalf("error = %q, want endpoint name", err)
-	}
-}
-
-func TestNewOCIFromEnvironmentRequiresEndpoint(t *testing.T) {
-	t.Setenv(EnvOCIFunctionsInvokeEndpoint, "")
-
-	_, err := NewOCIFromEnvironment()
-	if err == nil {
-		t.Fatalf("NewOCIFromEnvironment returned nil error, want endpoint error")
-	}
-	if !strings.Contains(err.Error(), EnvOCIFunctionsInvokeEndpoint) {
-		t.Fatalf("error = %q, want endpoint name", err)
+func TestNewOCIDoesNotRequireInvokeEndpointAtConstruction(t *testing.T) {
+	_, err := NewOCI(OCIOptions{
+		ConfigProvider: common.NewRawConfigurationProvider("tenancy", "user", "us-ashburn-1", "fingerprint", "private-key", nil),
+		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
+			t.Fatalf("client factory was called before invocation")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOCI returned error: %v", err)
 	}
 }
 
@@ -122,8 +113,7 @@ func TestNewOCIDefaultsToWorkloadAuth(t *testing.T) {
 	configCalled := false
 	clientCalled := false
 
-	_, err := NewOCI(OCIOptions{
-		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+	ociInvoker, err := NewOCI(OCIOptions{
 		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
 			workloadCalled = true
 			return workloadProvider, nil
@@ -152,8 +142,21 @@ func TestNewOCIDefaultsToWorkloadAuth(t *testing.T) {
 	if configCalled {
 		t.Fatalf("config provider factory was called, want workload default")
 	}
+	if clientCalled {
+		t.Fatalf("client factory was called before invocation")
+	}
+
+	_, err = ociInvoker.Invoke(context.Background(), Request{
+		Target: Target{
+			FunctionOCID:   "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+			InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
 	if !clientCalled {
-		t.Fatalf("client factory was not called")
+		t.Fatalf("client factory was not called during invocation")
 	}
 }
 
@@ -161,8 +164,7 @@ func TestNewOCIWorkloadModeWrapsUnavailableProvider(t *testing.T) {
 	expectedErr := errors.New("not running in OKE workload identity")
 
 	_, err := NewOCI(OCIOptions{
-		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
-		AuthMode:       OCIAuthModeWorkload,
+		AuthMode: OCIAuthModeWorkload,
 		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
 			return nil, expectedErr
 		},
@@ -183,7 +185,6 @@ func TestNewOCIWorkloadModeWrapsUnavailableProvider(t *testing.T) {
 }
 
 func TestNewOCIFromEnvironmentWorkloadModeReportsMissingProviderEnvironment(t *testing.T) {
-	t.Setenv(EnvOCIFunctionsInvokeEndpoint, "https://functions.us-ashburn-1.oci.oraclecloud.com")
 	t.Setenv(EnvOCIAuthMode, OCIAuthModeWorkload)
 	unsetEnv(t, ociauth.ResourcePrincipalVersionEnvVar)
 
@@ -202,10 +203,10 @@ func TestNewOCIFromEnvironmentWorkloadModeReportsMissingProviderEnvironment(t *t
 func TestNewOCIConfigModeUsesConfigProvider(t *testing.T) {
 	configProvider := common.NewRawConfigurationProvider("tenancy", "user", "us-ashburn-1", "fingerprint", "private-key", nil)
 	configCalled := false
+	clientCalled := false
 
-	_, err := NewOCI(OCIOptions{
-		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
-		AuthMode:       OCIAuthModeConfig,
+	ociInvoker, err := NewOCI(OCIOptions{
+		AuthMode: OCIAuthModeConfig,
 		ConfigFileProviderFactory: func() common.ConfigurationProvider {
 			configCalled = true
 			return configProvider
@@ -215,6 +216,7 @@ func TestNewOCIConfigModeUsesConfigProvider(t *testing.T) {
 			return nil, nil
 		},
 		ClientFactory: func(got common.ConfigurationProvider, _ string) (functionsInvokeClient, error) {
+			clientCalled = true
 			if got != configProvider {
 				t.Fatalf("config provider = %#v, want config file provider", got)
 			}
@@ -226,6 +228,18 @@ func TestNewOCIConfigModeUsesConfigProvider(t *testing.T) {
 	}
 	if !configCalled {
 		t.Fatalf("config provider factory was not called")
+	}
+	_, err = ociInvoker.Invoke(context.Background(), Request{
+		Target: Target{
+			FunctionOCID:   "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+			InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if !clientCalled {
+		t.Fatalf("client factory was not called during invocation")
 	}
 }
 
@@ -271,8 +285,7 @@ key_file=/does/not/matter
 
 func TestNewOCIRejectsInvalidAuthMode(t *testing.T) {
 	_, err := NewOCI(OCIOptions{
-		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
-		AuthMode:       "bogus",
+		AuthMode: "bogus",
 		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
 			t.Fatalf("client factory was called for invalid auth mode")
 			return nil, nil
@@ -286,13 +299,25 @@ func TestNewOCIRejectsInvalidAuthMode(t *testing.T) {
 	}
 }
 
-func TestNewOCIWrapsConfigProviderErrors(t *testing.T) {
-	_, err := NewOCI(OCIOptions{
-		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+func TestOCIInvokeWrapsClientConfigurationErrors(t *testing.T) {
+	ociInvoker, err := NewOCI(OCIOptions{
 		ConfigProvider: common.NewRawConfigurationProvider("", "", "", "", "", nil),
+		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
+			return nil, errors.New("bad config")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOCI returned error: %v", err)
+	}
+
+	_, err = ociInvoker.Invoke(context.Background(), Request{
+		Target: Target{
+			FunctionOCID:   "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+			InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		},
 	})
 	if err == nil {
-		t.Fatalf("NewOCI returned nil error, want config provider error")
+		t.Fatalf("Invoke returned nil error, want config provider error")
 	}
 	if !strings.Contains(err.Error(), "configure OCI Functions invoke client") {
 		t.Fatalf("error = %q, want OCI client configuration context", err)
@@ -301,10 +326,10 @@ func TestNewOCIWrapsConfigProviderErrors(t *testing.T) {
 
 func TestOCIInvokeClassifiesTimeout(t *testing.T) {
 	fakeClient := &fakeFunctionsInvokeClient{err: context.DeadlineExceeded}
-	ociInvoker := &OCI{client: fakeClient}
+	ociInvoker := newTestOCIInvoker(fakeClient, nil)
 
 	_, err := ociInvoker.Invoke(context.Background(), Request{
-		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
+		Target: targetWithEndpoint(),
 	})
 	if err == nil {
 		t.Fatalf("Invoke returned nil error, want timeout error")
@@ -318,7 +343,7 @@ func TestOCIInvokeClassifiesTimeout(t *testing.T) {
 }
 
 func TestOCIInvokeRequiresFunctionOCID(t *testing.T) {
-	ociInvoker := &OCI{client: &fakeFunctionsInvokeClient{}}
+	ociInvoker := newTestOCIInvoker(&fakeFunctionsInvokeClient{}, nil)
 
 	_, err := ociInvoker.Invoke(context.Background(), Request{})
 	if err == nil {
@@ -329,7 +354,22 @@ func TestOCIInvokeRequiresFunctionOCID(t *testing.T) {
 	}
 }
 
+func TestOCIInvokeRequiresInvokeEndpoint(t *testing.T) {
+	ociInvoker := newTestOCIInvoker(&fakeFunctionsInvokeClient{}, nil)
+
+	_, err := ociInvoker.Invoke(context.Background(), Request{
+		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
+	})
+	if err == nil {
+		t.Fatalf("Invoke returned nil error, want missing invoke endpoint error")
+	}
+	if !strings.Contains(err.Error(), "invoke endpoint") {
+		t.Fatalf("error = %q, want invoke endpoint message", err)
+	}
+}
+
 func TestOCIInvokeMapsRequestAndResponse(t *testing.T) {
+	var endpoint string
 	fakeClient := &fakeFunctionsInvokeClient{
 		response: ocifunctions.InvokeFunctionResponse{
 			RawResponse: &http.Response{
@@ -342,12 +382,15 @@ func TestOCIInvokeMapsRequestAndResponse(t *testing.T) {
 			Content: io.NopCloser(strings.NewReader(`{"ok":true}`)),
 		},
 	}
-	ociInvoker := &OCI{client: fakeClient}
+	ociInvoker := newTestOCIInvoker(fakeClient, &endpoint)
 
 	response, err := ociInvoker.Invoke(context.Background(), Request{
-		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
-		Index:  3,
-		Body:   []byte(`{"input":true}`),
+		Target: Target{
+			FunctionOCID:   "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+			InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com/",
+		},
+		Index: 3,
+		Body:  []byte(`{"input":true}`),
 	})
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
@@ -361,6 +404,9 @@ func TestOCIInvokeMapsRequestAndResponse(t *testing.T) {
 	}
 	if fakeClient.invokeType != ocifunctions.InvokeFunctionFnInvokeTypeSync {
 		t.Fatalf("invoke type = %q, want sync", fakeClient.invokeType)
+	}
+	if endpoint != "https://functions.us-ashburn-1.oci.oraclecloud.com" {
+		t.Fatalf("endpoint = %q, want normalized request target endpoint", endpoint)
 	}
 	if response.InvocationID != "call-id" {
 		t.Fatalf("invocation ID = %q, want Fn-Call-Id", response.InvocationID)
@@ -384,10 +430,10 @@ func TestOCIInvokeFallsBackToOpcRequestID(t *testing.T) {
 			RawResponse:  &http.Response{StatusCode: http.StatusOK},
 		},
 	}
-	ociInvoker := &OCI{client: fakeClient}
+	ociInvoker := newTestOCIInvoker(fakeClient, nil)
 
 	response, err := ociInvoker.Invoke(context.Background(), Request{
-		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
+		Target: targetWithEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
@@ -413,10 +459,10 @@ func TestOCIInvokeFailsOnNon2xxResponse(t *testing.T) {
 			Content: io.NopCloser(strings.NewReader(largeBody)),
 		},
 	}
-	ociInvoker := &OCI{client: fakeClient}
+	ociInvoker := newTestOCIInvoker(fakeClient, nil)
 
 	response, err := ociInvoker.Invoke(context.Background(), Request{
-		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
+		Target: targetWithEndpoint(),
 	})
 	if err == nil {
 		t.Fatalf("Invoke returned nil error, want non-2xx error")
@@ -449,10 +495,10 @@ func TestOCIInvokeReturnsResponseMetadataOnSDKError(t *testing.T) {
 			},
 		},
 	}
-	ociInvoker := &OCI{client: fakeClient}
+	ociInvoker := newTestOCIInvoker(fakeClient, nil)
 
 	response, err := ociInvoker.Invoke(context.Background(), Request{
-		Target: Target{FunctionOCID: "ocid1.fnfunc.oc1.iad.exampleuniqueid"},
+		Target: targetWithEndpoint(),
 	})
 	if err == nil {
 		t.Fatalf("Invoke returned nil error, want SDK error")
@@ -471,6 +517,25 @@ type fakeFunctionsInvokeClient struct {
 	functionID *string
 	body       []byte
 	invokeType ocifunctions.InvokeFunctionFnInvokeTypeEnum
+}
+
+func newTestOCIInvoker(fakeClient *fakeFunctionsInvokeClient, endpoint *string) *OCI {
+	return &OCI{
+		configProvider: common.NewRawConfigurationProvider("tenancy", "user", "us-ashburn-1", "fingerprint", "private-key", nil),
+		clientFactory: func(_ common.ConfigurationProvider, gotEndpoint string) (functionsInvokeClient, error) {
+			if endpoint != nil {
+				*endpoint = gotEndpoint
+			}
+			return fakeClient, nil
+		},
+	}
+}
+
+func targetWithEndpoint() Target {
+	return Target{
+		FunctionOCID:   "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+	}
 }
 
 func (f *fakeFunctionsInvokeClient) InvokeFunction(_ context.Context, request ocifunctions.InvokeFunctionRequest) (ocifunctions.InvokeFunctionResponse, error) {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/oracle/oci-functions-operator/internal/invoker"
+	"github.com/oracle/oci-functions-operator/internal/lifecycle"
 )
 
 func TestSelectInvokerDefaultsToFake(t *testing.T) {
@@ -102,10 +103,69 @@ func TestSelectInvokerRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestSelectLifecycleManagerDefaultsToNilForFake(t *testing.T) {
+	manager, err := selectLifecycleManager("")
+	if err != nil {
+		t.Fatalf("selectLifecycleManager returned error: %v", err)
+	}
+	if manager != nil {
+		t.Fatalf("manager = %#v, want nil for fake mode", manager)
+	}
+}
+
+func TestSelectLifecycleManagerSupportsOCI(t *testing.T) {
+	expectedManager := fakeLifecycleManager{}
+	resetLifecycleManager := replaceOCILifecycleManager(func() (lifecycle.Manager, error) {
+		return expectedManager, nil
+	})
+	defer resetLifecycleManager()
+
+	manager, err := selectLifecycleManager(invokerModeOCI)
+	if err != nil {
+		t.Fatalf("selectLifecycleManager returned error: %v", err)
+	}
+	if manager != expectedManager {
+		t.Fatalf("manager = %#v, want fake lifecycle manager", manager)
+	}
+}
+
+func TestSelectLifecycleManagerPropagatesOCIConstructionError(t *testing.T) {
+	expectedErr := errors.New("missing workload identity")
+	resetLifecycleManager := replaceOCILifecycleManager(func() (lifecycle.Manager, error) {
+		return nil, expectedErr
+	})
+	defer resetLifecycleManager()
+
+	manager, err := selectLifecycleManager(invokerModeOCI)
+	if err == nil {
+		t.Fatalf("selectLifecycleManager returned nil error, want OCI construction error")
+	}
+	if manager != nil {
+		t.Fatalf("manager = %#v, want nil on error", manager)
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("error = %v, want %v", err, expectedErr)
+	}
+}
+
 func replaceOCIInvoker(replacement func() (invoker.Interface, error)) func() {
 	previous := newOCIInvoker
 	newOCIInvoker = replacement
 	return func() {
 		newOCIInvoker = previous
 	}
+}
+
+func replaceOCILifecycleManager(replacement func() (lifecycle.Manager, error)) func() {
+	previous := newOCILifecycleManager
+	newOCILifecycleManager = replacement
+	return func() {
+		newOCILifecycleManager = previous
+	}
+}
+
+type fakeLifecycleManager struct{}
+
+func (fakeLifecycleManager) EnsureFunction(context.Context, lifecycle.DesiredFunction) (lifecycle.FunctionState, error) {
+	return lifecycle.FunctionState{}, nil
 }

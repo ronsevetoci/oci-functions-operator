@@ -1,6 +1,6 @@
 # Deploy The OCI Functions Operator On OKE
 
-This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). The MVP invokes existing OCI Functions only. It does not create, update, or delete OCI Functions.
+This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
 
 ## What Gets Installed
 
@@ -12,11 +12,11 @@ This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). The MVP in
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The operator image is built and pushed to a registry reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
-- OKE Workload Identity is available for the cluster and service account.
-- An existing OCI Function is already deployed.
-- You know the function OCID and function `invokeEndpoint`.
-- OCI IAM policy allows this Kubernetes workload to invoke the target function.
+- The operator image is reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
+- OKE Workload Identity is enabled/available for the cluster and service account.
+- OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources and invoke functions.
+- For managed mode: a compartment OCID, subnet OCIDs, and a function image OCI Functions can pull.
+- For existing mode: an existing function OCID and that function's invoke endpoint.
 
 ## Install CRDs
 
@@ -30,7 +30,7 @@ kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.or
 
 ## Deploy The Manager With Fake Mode
 
-Fake mode is useful for checking the Kubernetes installation path before wiring OCI invocation.
+Fake mode is useful for checking the Kubernetes installation path before wiring OCI permissions.
 
 ```sh
 export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
@@ -51,24 +51,34 @@ INVOKER_MODE=oci
 OCI_AUTH_MODE=workload
 ```
 
-The operator does not mount a developer `~/.oci/config` file or private PEM key in the OKE path.
+If `OCI_AUTH_MODE` is unset and `INVOKER_MODE=oci`, the manager defaults to `workload`.
 
 Required manager environment for OCI mode on OKE:
 
 - `INVOKER_MODE=oci`
 - `OCI_AUTH_MODE=workload`
-- `OCI_FUNCTIONS_INVOKE_ENDPOINT`: the target function invoke endpoint, without an API path.
-- `OCI_RESOURCE_PRINCIPAL_VERSION`: use `2.2` for the current SDK workload identity provider.
-- `OCI_RESOURCE_PRINCIPAL_REGION`: the OCI region for the workload identity provider, such as `us-ashburn-1`.
+- `OCI_RESOURCE_PRINCIPAL_VERSION=2.2`
+- `OCI_RESOURCE_PRINCIPAL_REGION=<cluster-or-workload-region>`, for example `me-jeddah-1`
+
+There is no manager-level `OCI_FUNCTIONS_INVOKE_ENDPOINT`. Existing Functions put the endpoint in `Function.spec.invokeEndpoint`; managed Functions discover it into `Function.status.invokeEndpoint`.
 
 The SDK also uses the pod service account token, Kubernetes service account CA, and `KUBERNETES_SERVICE_HOST` provided by Kubernetes/OKE.
 
-### IAM Policy
+## IAM Policy
 
-Grant the OKE workload permission to invoke the existing function. A typical policy shape is:
+Scope policies as tightly as your tenancy model allows. The workload principal conditions should match the namespace, service account, and OKE cluster OCID used by this deployment.
+
+For managed mode, the operator needs to ensure OCI Functions applications/functions and invoke the resolved function:
 
 ```text
-Allow any-user to use fn-functions in compartment <functions-compartment> where all {
+Allow any-user to manage fn-apps in compartment <functions-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
+
+Allow any-user to manage fn-functions in compartment <functions-compartment> where all {
   request.principal.type = 'workload',
   request.principal.namespace = 'oci-functions-operator-system',
   request.principal.service_account = 'oci-functions-operator-controller-manager',
@@ -76,7 +86,20 @@ Allow any-user to use fn-functions in compartment <functions-compartment> where 
 }
 ```
 
-Adjust the compartment, resource family, and conditions to match your tenancy policy model.
+If the application subnets live in a different compartment, grant network use there:
+
+```text
+Allow any-user to use virtual-network-family in compartment <network-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
+```
+
+If the function image is in OCIR and the workload needs repository access, add the appropriate repository read policy for your registry compartment/tenancy.
+
+For existing-mode invocation only, you may be able to narrow policy to `use fn-functions` for the target compartment instead of `manage`.
 
 ## Deploy The Manager With OCI Mode
 
@@ -84,8 +107,7 @@ Set cluster-specific values:
 
 ```sh
 export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
-export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"
-export OCI_RESOURCE_PRINCIPAL_REGION="<oci-region>"
+export OCI_RESOURCE_PRINCIPAL_REGION="me-jeddah-1"
 ```
 
 Apply the OCI mode overlay, then replace the sample ConfigMap values:
@@ -96,7 +118,6 @@ kubectl apply -k config/overlays/oci-mode
 kubectl -n oci-functions-operator-system create configmap oci-functions-operator-oci-mode \
   --from-literal=INVOKER_MODE=oci \
   --from-literal=OCI_AUTH_MODE=workload \
-  --from-literal=OCI_FUNCTIONS_INVOKE_ENDPOINT="$OCI_FUNCTIONS_INVOKE_ENDPOINT" \
   --from-literal=OCI_RESOURCE_PRINCIPAL_VERSION=2.2 \
   --from-literal=OCI_RESOURCE_PRINCIPAL_REGION="$OCI_RESOURCE_PRINCIPAL_REGION" \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -112,12 +133,54 @@ Confirm no local OCI credential Secret is mounted:
 kubectl -n oci-functions-operator-system get deployment oci-functions-operator-controller-manager -o yaml
 ```
 
-## Invoke An Existing Function
+## Managed Function Mode
 
-Create a `Function` that references the existing OCI Function:
+Create a managed `Function`. This example targets Jeddah with region identifier `me-jeddah-1`:
+
+```sh
+export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
+export SUBNET_OCID="ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"
+export FUNCTION_IMAGE="me-jeddah-1.ocir.io/<namespace>/functions/hello:latest"
+
+cat <<EOF | kubectl apply -f -
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: oci-managed-hello
+spec:
+  mode: Managed
+  config:
+    region: me-jeddah-1
+    compartmentId: ${COMPARTMENT_OCID}
+    applicationName: oci-functions-operator-demo
+    subnetIds:
+    - ${SUBNET_OCID}
+    displayName: oci-managed-hello
+    image: ${FUNCTION_IMAGE}
+    memoryInMBs: 128
+    timeoutInSeconds: 30
+    config:
+      LOG_LEVEL: info
+EOF
+```
+
+Watch status until `Ready=True` and these fields are populated:
+
+```sh
+kubectl get function oci-managed-hello -o yaml
+```
+
+- `status.applicationId`
+- `status.functionId`
+- `status.invokeEndpoint`
+
+## Existing Function Mode
+
+Create a `Function` that references an existing OCI Function:
 
 ```sh
 export FUNCTION_OCID="ocid1.fnfunc.oc1.iad.exampleuniqueid"
+export FUNCTION_INVOKE_ENDPOINT="https://functions.us-ashburn-1.oci.oraclecloud.com"
 
 cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -125,21 +188,35 @@ kind: Function
 metadata:
   name: oci-existing-hello
 spec:
+  mode: Existing
   functionId: ${FUNCTION_OCID}
+  invokeEndpoint: ${FUNCTION_INVOKE_ENDPOINT}
 EOF
+```
+
+The operator copies the OCID and endpoint into status and marks the `Function` Ready.
+
+## Submit A FunctionJob
+
+Set the function resource name you want to invoke:
+
+```sh
+export FUNCTION_RESOURCE_NAME="oci-managed-hello"
+# or:
+# export FUNCTION_RESOURCE_NAME="oci-existing-hello"
 ```
 
 Create a `FunctionJob`:
 
 ```sh
-cat <<'EOF' | kubectl apply -f -
+cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
 kind: FunctionJob
 metadata:
   name: oci-hello-job
 spec:
   functionRef:
-    name: oci-existing-hello
+    name: ${FUNCTION_RESOURCE_NAME}
   payload:
     message: hello from OKE
     requestId: oke-demo-001
@@ -164,7 +241,7 @@ kubectl get events --field-selector involvedObject.kind=FunctionJob,involvedObje
 Symptoms:
 
 - Manager fails startup with `configure OCI Workload Identity auth provider`.
-- `FunctionJob` status contains `oci auth error`.
+- `Function` status or `FunctionJob` status contains `oci auth error`.
 - Manager logs mention `401`, `403`, `resource principal`, `Workload Identity`, service account token, or `OCI_RESOURCE_PRINCIPAL_*`.
 
 Checks:
@@ -174,20 +251,37 @@ Checks:
 - Confirm the pod uses service account `oci-functions-operator-controller-manager`.
 - Confirm the service account token is mounted in the pod.
 - Confirm the OKE cluster supports Workload Identity for the workload.
-- Confirm the IAM policy matches the namespace, service account, cluster OCID, and function compartment.
+- Confirm the IAM policy matches the namespace, service account, cluster OCID, and target compartments.
+
+### Managed Function Reconcile Errors
+
+Symptoms:
+
+- `Function.status.phase=Error`.
+- `Function.status.message` mentions listing, creating, getting, or updating OCI Functions applications/functions.
+
+Checks:
+
+- Confirm `spec.config.region` is a valid OCI region identifier such as `me-jeddah-1`.
+- Confirm `spec.config.compartmentId` is the Functions compartment.
+- Confirm `spec.config.subnetIds` are valid and usable by OCI Functions.
+- Confirm IAM policy allows managing `fn-apps` and `fn-functions`.
+- Confirm the function image exists and OCI Functions can pull it.
 
 ### Invoke Endpoint Errors
 
 Symptoms:
 
-- Manager fails startup if `OCI_FUNCTIONS_INVOKE_ENDPOINT` is empty.
-- `status.lastError` contains `oci endpoint error`.
+- Existing-mode `Function` is not Ready because `spec.invokeEndpoint` is empty.
+- Managed-mode `Function` remains Pending because OCI has not returned an invoke endpoint yet.
+- `FunctionJob.status.lastError` contains `oci endpoint error`.
 
 Checks:
 
-- Confirm the endpoint comes from the function `invokeEndpoint`.
+- Existing mode: confirm `spec.invokeEndpoint` comes from the function `invokeEndpoint`.
 - Do not include `/20181201` or another API path.
-- Confirm the endpoint region matches `OCI_RESOURCE_PRINCIPAL_REGION`.
+- Managed mode: inspect `Function.status.invokeEndpoint`.
+- Confirm the endpoint region matches the function region.
 - Confirm the OKE cluster can reach the endpoint.
 - Confirm DNS and egress rules for worker nodes.
 
@@ -195,12 +289,14 @@ Checks:
 
 Symptoms:
 
-- `FunctionJob` fails before invoking if the referenced `Function` omits `spec.functionId`.
+- Existing-mode `Function` is not Ready if `spec.functionId` is missing.
+- `FunctionJob` fails clearly if the referenced `Function` is not Ready.
 - `status.lastError` contains `oci function OCID error` or a 404 from OCI.
 
 Checks:
 
-- Use `spec.functionId`, not only the deprecated `spec.existingFunctionOcid`, for OCI mode.
+- Existing mode: use `spec.functionId` and `spec.invokeEndpoint`.
+- Managed mode: use `status.functionId` populated by the `Function` controller.
 - Confirm the OCID starts with `ocid1.fnfunc`.
 - Confirm the function exists in the same region as the invoke endpoint.
 - Confirm the workload identity policy allows invoking that function.
@@ -210,14 +306,14 @@ Checks:
 Symptoms:
 
 - Manager logs include `forbidden`.
-- `FunctionJob` status does not update.
+- `Function` or `FunctionJob` status does not update.
 - Events are missing.
 
 Checks:
 
 - Reapply RBAC: `kubectl apply -k config/rbac`.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
-- Confirm generated `ClusterRole` includes `functionjobs/status`, `functions`, and core `events`.
+- Confirm generated `ClusterRole` includes `functions/status`, `functionjobs/status`, and core `events`.
 - Reapply the full default or OCI overlay if RBAC drifted.
 
 ## Local Config Auth
@@ -226,4 +322,4 @@ Checks:
 
 ## Current MVP Boundary
 
-This deployment supports invoking existing OCI Functions. Function lifecycle management, application creation, image deployment, event sources, and scheduled jobs are intentionally out of scope for the current MVP.
+This deployment supports existing Function references, managed application/function reconciliation, and `FunctionJob` invocation. Image build/push workflows, Function deletion, event sources, schedules, and Function deployment packaging remain out of scope.

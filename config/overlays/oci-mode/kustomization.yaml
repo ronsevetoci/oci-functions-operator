@@ -8,7 +8,6 @@ configMapGenerator:
   literals:
   - INVOKER_MODE=oci
   - OCI_AUTH_MODE=workload
-  - OCI_FUNCTIONS_INVOKE_ENDPOINT=https://replace-with-function-invoke-endpoint
   - OCI_RESOURCE_PRINCIPAL_VERSION=2.2
   - OCI_RESOURCE_PRINCIPAL_REGION=replace-with-oci-region
 

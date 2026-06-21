@@ -5,4 +5,6 @@ metadata:
   labels:
     demo: oci-functions-operator-fake
 spec:
+  mode: Existing
   functionId: ocid1.fnfunc.oc1.iad.exampleuniqueid
+  invokeEndpoint: https://functions.us-ashburn-1.oci.oraclecloud.com

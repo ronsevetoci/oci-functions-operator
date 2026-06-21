@@ -98,6 +98,7 @@ func TestFunctionJobReconcilerInvokesPayloadsOnceAndCompletes(t *testing.T) {
 		t.Fatalf("invocation count = %d, want %d", got, want)
 	}
 	assertRequestIndexes(t, invoker.requests, 0, 1)
+	assertRequestTargets(t, invoker.requests, function.Status.FunctionID, function.Status.InvokeEndpoint)
 
 	var updated functionsv1alpha1.FunctionJob
 	if err := client.Get(ctx, types.NamespacedName{Name: "hello-job", Namespace: "default"}, &updated); err != nil {
@@ -116,19 +117,34 @@ func TestFunctionJobReconcilerInvokesPayloadsOnceAndCompletes(t *testing.T) {
 	assertEventContains(t, drainEvents(recorder), "Normal Complete")
 }
 
-func TestFunctionJobReconcilerRequiresFunctionIDWhenInvokerRequiresIt(t *testing.T) {
+func TestFunctionJobReconcilerFailsWhenReferencedFunctionIsNotReady(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
 	function := readyFunction("hello", "default", "ocid1.fnfunc.oc1.iad.exampleuniqueid")
+	function.Spec.Mode = functionsv1alpha1.FunctionModeManaged
+	function.Spec.FunctionID = ""
+	function.Spec.InvokeEndpoint = ""
+	function.Status.Phase = functionsv1alpha1.FunctionPhasePending
+	function.Status.FunctionID = ""
+	function.Status.FunctionOCID = ""
+	function.Status.InvokeEndpoint = ""
+	function.Status.Conditions = []metav1.Condition{{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ManagedFunctionPending",
+		Message:            "OCI function exists but invoke endpoint is not available yet.",
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
 	job := &functionsv1alpha1.FunctionJob{
-		ObjectMeta: metav1.ObjectMeta{Name: "oci-job", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pending-job", Namespace: "default"},
 		Spec: functionsv1alpha1.FunctionJobSpec{
 			FunctionRef: functionsv1alpha1.FunctionReference{Name: "hello"},
 			Payload:     &apiruntime.RawExtension{Raw: []byte(`{"message":"hello"}`)},
 		},
 	}
 	recorder := record.NewFakeRecorder(10)
-	invoker := &functionIDRequiredInvoker{}
+	invoker := &scriptedInvoker{}
 
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -137,27 +153,27 @@ func TestFunctionJobReconcilerRequiresFunctionIDWhenInvokerRequiresIt(t *testing
 		Build()
 	reconciler := &FunctionJobReconciler{Client: client, Scheme: scheme, Invoker: invoker, Recorder: recorder}
 
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "oci-job", Namespace: "default"}})
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "pending-job", Namespace: "default"}})
 	if err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	if invoker.calls != 0 {
-		t.Fatalf("invoker calls = %d, want 0 before functionId validation passes", invoker.calls)
+	if len(invoker.requests) != 0 {
+		t.Fatalf("invocation count = %d, want 0 while Function is not Ready", len(invoker.requests))
 	}
 
 	var updated functionsv1alpha1.FunctionJob
-	if err := client.Get(ctx, types.NamespacedName{Name: "oci-job", Namespace: "default"}, &updated); err != nil {
+	if err := client.Get(ctx, types.NamespacedName{Name: "pending-job", Namespace: "default"}, &updated); err != nil {
 		t.Fatalf("get updated FunctionJob: %v", err)
 	}
 	if updated.Status.Phase != functionsv1alpha1.FunctionJobPhaseFailed {
 		t.Fatalf("phase = %q, want %q", updated.Status.Phase, functionsv1alpha1.FunctionJobPhaseFailed)
 	}
-	if !strings.Contains(updated.Status.LastError, "spec.functionId") {
-		t.Fatalf("lastError = %q, want spec.functionId guidance", updated.Status.LastError)
+	if !strings.Contains(updated.Status.LastError, "not Ready") || !strings.Contains(updated.Status.LastError, "invoke endpoint is missing") {
+		t.Fatalf("lastError = %q, want not Ready guidance with missing endpoint", updated.Status.LastError)
 	}
 	failed := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionJobConditionFailed)
-	if failed == nil || failed.Status != metav1.ConditionTrue || failed.Reason != "FunctionIDRequired" {
-		t.Fatalf("Failed condition = %#v, want FunctionIDRequired true", failed)
+	if failed == nil || failed.Status != metav1.ConditionTrue || failed.Reason != "FunctionNotReady" {
+		t.Fatalf("Failed condition = %#v, want FunctionNotReady true", failed)
 	}
 	assertEventContains(t, drainEvents(recorder), "Warning Failed")
 }
@@ -166,7 +182,6 @@ func TestFunctionJobReconcilerPropagatesOCIRequestID(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
 	function := readyFunction("hello", "default", "ocid1.fnfunc.oc1.iad.exampleuniqueid")
-	function.Spec.FunctionID = function.Spec.ExistingFunctionOCID
 	job := &functionsv1alpha1.FunctionJob{
 		ObjectMeta: metav1.ObjectMeta{Name: "oci-job", Namespace: "default"},
 		Spec: functionsv1alpha1.FunctionJobSpec{
@@ -213,7 +228,6 @@ func TestFunctionJobReconcilerRecordsOCIErrorDetails(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
 	function := readyFunction("hello", "default", "ocid1.fnfunc.oc1.iad.exampleuniqueid")
-	function.Spec.FunctionID = function.Spec.ExistingFunctionOCID
 	job := &functionsv1alpha1.FunctionJob{
 		ObjectMeta: metav1.ObjectMeta{Name: "oci-error-job", Namespace: "default"},
 		Spec: functionsv1alpha1.FunctionJobSpec{
@@ -447,19 +461,24 @@ func rawPayload(value string) apiruntime.RawExtension {
 
 func readyFunction(name, namespace, ocid string) *functionsv1alpha1.Function {
 	now := metav1.Now()
+	invokeEndpoint := "https://functions.us-ashburn-1.oci.oraclecloud.com"
 	return &functionsv1alpha1.Function{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: functionsv1alpha1.FunctionSpec{
-			ExistingFunctionOCID: ocid,
+			Mode:           functionsv1alpha1.FunctionModeExisting,
+			FunctionID:     ocid,
+			InvokeEndpoint: invokeEndpoint,
 		},
 		Status: functionsv1alpha1.FunctionStatus{
-			Phase:        functionsv1alpha1.FunctionPhaseReady,
-			FunctionOCID: ocid,
+			Phase:          functionsv1alpha1.FunctionPhaseReady,
+			FunctionOCID:   ocid,
+			FunctionID:     ocid,
+			InvokeEndpoint: invokeEndpoint,
 			Conditions: []metav1.Condition{{
 				Type:               functionsv1alpha1.FunctionConditionReady,
 				Status:             metav1.ConditionTrue,
 				Reason:             "ExistingFunctionResolved",
-				Message:            "Existing OCI Function OCID is configured.",
+				Message:            "Existing OCI Function OCID and invoke endpoint are configured.",
 				ObservedGeneration: 1,
 				LastTransitionTime: now,
 			}},
@@ -492,19 +511,6 @@ func (s *scriptedInvoker) Invoke(_ context.Context, request invoker.Request) (in
 	}, nil
 }
 
-type functionIDRequiredInvoker struct {
-	calls int
-}
-
-func (f *functionIDRequiredInvoker) RequiresFunctionID() bool {
-	return true
-}
-
-func (f *functionIDRequiredInvoker) Invoke(context.Context, invoker.Request) (invoker.Response, error) {
-	f.calls++
-	return invoker.Response{InvocationID: "should-not-run", StatusCode: 202}, nil
-}
-
 type metadataFailingInvoker struct{}
 
 func (m *metadataFailingInvoker) Invoke(context.Context, invoker.Request) (invoker.Response, error) {
@@ -523,6 +529,19 @@ func assertRequestIndexes(t *testing.T, requests []invoker.Request, indexes ...i
 	for i, want := range indexes {
 		if requests[i].Index != want {
 			t.Fatalf("request[%d].Index = %d, want %d", i, requests[i].Index, want)
+		}
+	}
+}
+
+func assertRequestTargets(t *testing.T, requests []invoker.Request, functionID, invokeEndpoint string) {
+	t.Helper()
+
+	for i, request := range requests {
+		if request.Target.FunctionOCID != functionID {
+			t.Fatalf("request[%d] function OCID = %q, want %q", i, request.Target.FunctionOCID, functionID)
+		}
+		if request.Target.InvokeEndpoint != invokeEndpoint {
+			t.Fatalf("request[%d] invoke endpoint = %q, want %q", i, request.Target.InvokeEndpoint, invokeEndpoint)
 		}
 	}
 }

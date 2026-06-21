@@ -13,6 +13,17 @@ const (
 	FunctionConditionReady = "Ready"
 )
 
+// FunctionMode declares whether a Function references an existing OCI Function or manages one.
+// +kubebuilder:validation:Enum=Existing;Managed
+type FunctionMode string
+
+const (
+	// FunctionModeExisting references an existing OCI Function.
+	FunctionModeExisting FunctionMode = "Existing"
+	// FunctionModeManaged creates and updates an OCI Function.
+	FunctionModeManaged FunctionMode = "Managed"
+)
+
 // FunctionPhase summarizes the controller-observed state of a Function.
 // +kubebuilder:validation:Enum=Pending;Ready;Error
 type FunctionPhase string
@@ -27,7 +38,15 @@ const (
 // +kubebuilder:validation:XValidation:rule="has(self.functionId) || has(self.existingFunctionOcid) || has(self.config)",message="one of spec.functionId, spec.existingFunctionOcid, or spec.config is required"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && (has(self.functionId) || has(self.existingFunctionOcid)))",message="spec.config is mutually exclusive with existing function references"
 // +kubebuilder:validation:XValidation:rule="!(has(self.functionId) && has(self.existingFunctionOcid))",message="spec.functionId and spec.existingFunctionOcid are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(has(self.functionId) || has(self.existingFunctionOcid)) || has(self.invokeEndpoint)",message="existing Function mode requires spec.invokeEndpoint"
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Existing' || ((has(self.functionId) || has(self.existingFunctionOcid)) && has(self.invokeEndpoint))",message="mode Existing requires spec.functionId or spec.existingFunctionOcid and spec.invokeEndpoint"
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Managed' || has(self.config)",message="mode Managed requires spec.config"
 type FunctionSpec struct {
+	// Mode selects whether the operator references an existing OCI Function or manages one.
+	// When omitted, mode is inferred from functionId/existingFunctionOcid or config.
+	// +optional
+	Mode FunctionMode `json:"mode,omitempty"`
+
 	// FunctionID points at an existing OCI Functions function OCID.
 	// +optional
 	// +kubebuilder:validation:Pattern=^ocid1\.fnfunc\..+
@@ -39,16 +58,42 @@ type FunctionSpec struct {
 	// +kubebuilder:validation:Pattern=^ocid1\.fnfunc\..+
 	ExistingFunctionOCID string `json:"existingFunctionOcid,omitempty"`
 
-	// Config describes desired function configuration for future lifecycle management.
+	// InvokeEndpoint is the OCI Functions invoke endpoint for an existing function.
+	// Managed functions discover this endpoint into status.
+	// +optional
+	// +kubebuilder:validation:Pattern="^https?://.+"
+	InvokeEndpoint string `json:"invokeEndpoint,omitempty"`
+
+	// Config describes desired function configuration for managed lifecycle.
 	// +optional
 	Config *FunctionConfig `json:"config,omitempty"`
 }
 
-// FunctionConfig contains the minimal OCI Functions configuration this API will manage later.
+// FunctionConfig contains the minimal OCI Functions configuration this API manages.
 type FunctionConfig struct {
-	// ApplicationOCID is the OCI Functions application OCID that owns the function.
+	// Region is the OCI region identifier, such as me-jeddah-1.
+	// +kubebuilder:validation:MinLength=1
+	Region string `json:"region"`
+
+	// CompartmentID is the compartment OCID for the managed application/function.
+	// +kubebuilder:validation:Pattern=^ocid1\.compartment\..+
+	CompartmentID string `json:"compartmentId"`
+
+	// ApplicationName is the display name of the OCI Functions application to ensure.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	ApplicationName string `json:"applicationName"`
+
+	// SubnetIDs are the subnet OCIDs for a newly created application.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	SubnetIDs []string `json:"subnetIds"`
+
+	// ApplicationOCID is an existing OCI Functions application OCID.
+	// Deprecated: use applicationName and subnetIds for managed application reconciliation.
+	// +optional
 	// +kubebuilder:validation:Pattern=^ocid1\.fnapp\..+
-	ApplicationOCID string `json:"applicationOcid"`
+	ApplicationOCID string `json:"applicationOcid,omitempty"`
 
 	// DisplayName is the OCI function display name.
 	// +kubebuilder:validation:MinLength=1
@@ -59,9 +104,15 @@ type FunctionConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
-	// MemoryInMB is the memory size to configure when lifecycle management is implemented.
+	// MemoryInMBs is the memory size to configure.
 	// +optional
 	// +kubebuilder:default=128
+	// +kubebuilder:validation:Enum=128;256;512;1024;2048
+	MemoryInMBs int32 `json:"memoryInMBs,omitempty"`
+
+	// MemoryInMB is a deprecated alias for MemoryInMBs.
+	// Deprecated: use memoryInMBs.
+	// +optional
 	// +kubebuilder:validation:Enum=128;256;512;1024;2048
 	MemoryInMB int32 `json:"memoryInMB,omitempty"`
 
@@ -72,11 +123,16 @@ type FunctionConfig struct {
 	// +kubebuilder:validation:Maximum=300
 	TimeoutInSeconds int32 `json:"timeoutInSeconds,omitempty"`
 
-	// Environment is a future OCI function config map.
+	// Config is the OCI function configuration map.
+	// +optional
+	Config map[string]string `json:"config,omitempty"`
+
+	// Environment is a deprecated alias for Config.
+	// Deprecated: use config.
 	// +optional
 	Environment map[string]string `json:"environment,omitempty"`
 
-	// FreeformTags are OCI freeform tags to apply when lifecycle management is implemented.
+	// FreeformTags are OCI freeform tags to apply to managed resources.
 	// +optional
 	FreeformTags map[string]string `json:"freeformTags,omitempty"`
 }
@@ -94,6 +150,18 @@ type FunctionStatus struct {
 	// FunctionOCID is the resolved OCI function OCID when known.
 	// +optional
 	FunctionOCID string `json:"functionOcid,omitempty"`
+
+	// FunctionID is the resolved OCI function OCID when known.
+	// +optional
+	FunctionID string `json:"functionId,omitempty"`
+
+	// ApplicationID is the resolved OCI application OCID when known.
+	// +optional
+	ApplicationID string `json:"applicationId,omitempty"`
+
+	// InvokeEndpoint is the resolved OCI Functions invoke endpoint when known.
+	// +optional
+	InvokeEndpoint string `json:"invokeEndpoint,omitempty"`
 
 	// Message is a short human-readable status summary.
 	// +optional
@@ -116,7 +184,7 @@ type FunctionStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,categories={oci,functions}
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
-// +kubebuilder:printcolumn:name="Function OCID",type=string,JSONPath=".status.functionOcid"
+// +kubebuilder:printcolumn:name="Function ID",type=string,JSONPath=".status.functionId"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // Function is the Schema for the functions API.

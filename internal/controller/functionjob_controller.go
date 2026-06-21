@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	functionsv1alpha1 "github.com/oracle/oci-functions-operator/api/v1alpha1"
 	"github.com/oracle/oci-functions-operator/internal/invoker"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -87,8 +89,10 @@ func (r *FunctionJobReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, r.updateFunctionJobStatus(ctx, &job, desiredObject.Status)
 	}
 
-	if !function.IsReady() || function.Status.FunctionOCID == "" {
-		markWaitingForFunction(desiredObject, now, "FunctionNotReady", "Referenced Function is not ready for invocation.")
+	target := invocationTargetForFunction(&function)
+	if !functionReadyForInvocation(&function, target) {
+		markFunctionNotReady(desiredObject, now, &function, target)
+		r.recordEvent(&job, corev1.EventTypeWarning, functionJobEventFailed, desiredObject.Status.LastError)
 		return ctrl.Result{}, r.updateFunctionJobStatus(ctx, &job, desiredObject.Status)
 	}
 
@@ -110,13 +114,13 @@ func (r *FunctionJobReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		markInvokerNotConfigured(desiredObject, now)
 		return ctrl.Result{}, r.updateFunctionJobStatus(ctx, &job, desiredObject.Status)
 	}
-	if requiresFunctionID(inv) && function.Spec.FunctionID == "" {
+	if requiresFunctionID(inv) && target.FunctionOCID == "" {
 		markFunctionIDRequired(desiredObject, now, function.Name)
 		r.recordEvent(&job, corev1.EventTypeWarning, functionJobEventFailed, desiredObject.Status.LastError)
 		return ctrl.Result{}, r.updateFunctionJobStatus(ctx, &job, desiredObject.Status)
 	}
 
-	processed, err := r.invokeRunnablePayloads(ctx, inv, &job, &function, desiredObject, payloads, now)
+	processed, err := r.invokeRunnablePayloads(ctx, inv, &job, target, desiredObject, payloads, now)
 	if err != nil {
 		if errors.Is(err, invoker.ErrNotImplemented) {
 			markInvokerNotConfigured(desiredObject, now)
@@ -167,6 +171,29 @@ func markWaitingForFunction(job *functionsv1alpha1.FunctionJob, now metav1.Time,
 	})
 }
 
+func markFunctionNotReady(job *functionsv1alpha1.FunctionJob, now metav1.Time, function *functionsv1alpha1.Function, target invoker.Target) {
+	job.Status.Phase = functionsv1alpha1.FunctionJobPhaseFailed
+	job.Status.Active = 0
+	job.Status.LastError = functionNotReadyMessage(function, target)
+	if job.Status.CompletionTime == nil {
+		job.Status.CompletionTime = &now
+	}
+	job.SetCondition(metav1.Condition{
+		Type:               functionsv1alpha1.FunctionJobConditionFunctionResolved,
+		Status:             metav1.ConditionFalse,
+		Reason:             "FunctionNotReady",
+		Message:            job.Status.LastError,
+		ObservedGeneration: job.Generation,
+		LastTransitionTime: now,
+	})
+	setJobConditions(job, now, conditionSet{
+		Pending:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionNotReady", Message: "Referenced Function is not ready."},
+		Running:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionNotReady", Message: "FunctionJob cannot run until the referenced Function is ready."},
+		Complete: conditionState{Status: metav1.ConditionFalse, Reason: "FunctionNotReady", Message: "FunctionJob did not complete."},
+		Failed:   conditionState{Status: metav1.ConditionTrue, Reason: "FunctionNotReady", Message: job.Status.LastError},
+	})
+}
+
 func markInvokerNotConfigured(job *functionsv1alpha1.FunctionJob, now metav1.Time) {
 	job.Status.Phase = functionsv1alpha1.FunctionJobPhasePending
 	job.Status.Active = 0
@@ -182,19 +209,19 @@ func markInvokerNotConfigured(job *functionsv1alpha1.FunctionJob, now metav1.Tim
 func markFunctionIDRequired(job *functionsv1alpha1.FunctionJob, now metav1.Time, functionName string) {
 	job.Status.Phase = functionsv1alpha1.FunctionJobPhaseFailed
 	job.Status.Active = 0
-	job.Status.LastError = fmt.Sprintf("OCI mode requires referenced Function %q to set spec.functionId", functionName)
+	job.Status.LastError = fmt.Sprintf("OCI mode requires referenced Function %q to resolve status.functionId", functionName)
 	if job.Status.CompletionTime == nil {
 		job.Status.CompletionTime = &now
 	}
 	setJobConditions(job, now, conditionSet{
-		Pending:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionIDRequired", Message: "Referenced Function is missing spec.functionId."},
-		Running:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionIDRequired", Message: "FunctionJob cannot run without spec.functionId in OCI mode."},
+		Pending:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionIDRequired", Message: "Referenced Function is missing status.functionId."},
+		Running:  conditionState{Status: metav1.ConditionFalse, Reason: "FunctionIDRequired", Message: "FunctionJob cannot run without status.functionId in OCI mode."},
 		Complete: conditionState{Status: metav1.ConditionFalse, Reason: "FunctionIDRequired", Message: "FunctionJob did not complete."},
 		Failed:   conditionState{Status: metav1.ConditionTrue, Reason: "FunctionIDRequired", Message: job.Status.LastError},
 	})
 }
 
-func (r *FunctionJobReconciler) invokeRunnablePayloads(ctx context.Context, inv invoker.Interface, job *functionsv1alpha1.FunctionJob, function *functionsv1alpha1.Function, desired *functionsv1alpha1.FunctionJob, payloads [][]byte, now metav1.Time) (int32, error) {
+func (r *FunctionJobReconciler) invokeRunnablePayloads(ctx context.Context, inv invoker.Interface, job *functionsv1alpha1.FunctionJob, target invoker.Target, desired *functionsv1alpha1.FunctionJob, payloads [][]byte, now metav1.Time) (int32, error) {
 	limit := job.DesiredParallelism()
 	retryLimit := job.DesiredRetryLimit()
 	maxAttempts := retryLimit + 1
@@ -214,13 +241,9 @@ func (r *FunctionJobReconciler) invokeRunnablePayloads(ctx context.Context, inv 
 		status.Phase = functionsv1alpha1.InvocationPhaseRunning
 		for status.Attempts < maxAttempts {
 			response, err := inv.Invoke(ctx, invoker.Request{
-				Target: invoker.Target{
-					Namespace:    function.Namespace,
-					FunctionName: function.Name,
-					FunctionOCID: function.Status.FunctionOCID,
-				},
-				Index: status.Index,
-				Body:  payloads[status.Index],
+				Target: target,
+				Index:  status.Index,
+				Body:   payloads[status.Index],
 			})
 			if errors.Is(err, invoker.ErrNotImplemented) {
 				status.Phase = functionsv1alpha1.InvocationPhasePending
@@ -396,6 +419,65 @@ func hasRunnablePayload(statuses []functionsv1alpha1.FunctionJobInvocationStatus
 		}
 	}
 	return false
+}
+
+func invocationTargetForFunction(function *functionsv1alpha1.Function) invoker.Target {
+	functionID := strings.TrimSpace(function.Status.FunctionID)
+	if functionID == "" {
+		functionID = strings.TrimSpace(function.Status.FunctionOCID)
+	}
+	invokeEndpoint := strings.TrimSpace(function.Status.InvokeEndpoint)
+
+	if resolvedFunctionMode(function) == functionsv1alpha1.FunctionModeExisting {
+		if functionID == "" {
+			functionID = resolvedSpecFunctionID(function)
+		}
+		if invokeEndpoint == "" {
+			invokeEndpoint = strings.TrimSpace(function.Spec.InvokeEndpoint)
+		}
+	}
+
+	return invoker.Target{
+		Namespace:      function.Namespace,
+		FunctionName:   function.Name,
+		FunctionOCID:   functionID,
+		InvokeEndpoint: invokeEndpoint,
+	}
+}
+
+func functionReadyForInvocation(function *functionsv1alpha1.Function, target invoker.Target) bool {
+	if target.FunctionOCID == "" || target.InvokeEndpoint == "" {
+		return false
+	}
+	return function.IsReady()
+}
+
+func functionNotReadyMessage(function *functionsv1alpha1.Function, target invoker.Target) string {
+	details := []string{}
+	condition := meta.FindStatusCondition(function.Status.Conditions, functionsv1alpha1.FunctionConditionReady)
+	switch {
+	case condition == nil:
+		details = append(details, "Ready condition is missing")
+	case condition.Status != metav1.ConditionTrue:
+		message := fmt.Sprintf("Ready=%s", condition.Status)
+		if condition.Reason != "" {
+			message += " reason=" + condition.Reason
+		}
+		if condition.Message != "" {
+			message += " message=" + condition.Message
+		}
+		details = append(details, message)
+	}
+	if target.FunctionOCID == "" {
+		details = append(details, "function OCID is missing")
+	}
+	if target.InvokeEndpoint == "" {
+		details = append(details, "invoke endpoint is missing")
+	}
+	if len(details) == 0 {
+		details = append(details, "Ready condition is false")
+	}
+	return fmt.Sprintf("referenced Function %q is not Ready: %s", function.Name, strings.Join(details, "; "))
 }
 
 func requiresFunctionID(inv invoker.Interface) bool {

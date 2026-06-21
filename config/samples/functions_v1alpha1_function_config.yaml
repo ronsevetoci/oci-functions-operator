@@ -3,13 +3,18 @@ kind: Function
 metadata:
   name: desired-hello
 spec:
+  mode: Managed
   config:
-    applicationOcid: ocid1.fnapp.oc1.iad.exampleuniqueid
+    region: me-jeddah-1
+    compartmentId: ocid1.compartment.oc1..exampleuniqueid
+    applicationName: oci-functions-operator-demo
+    subnetIds:
+    - ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid
     displayName: desired-hello
-    image: iad.ocir.io/example/functions/hello:latest
-    memoryInMB: 128
+    image: me-jeddah-1.ocir.io/example/functions/hello:latest
+    memoryInMBs: 128
     timeoutInSeconds: 30
-    environment:
+    config:
       LOG_LEVEL: info
     freeformTags:
       managed-by: oci-functions-operator

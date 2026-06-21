@@ -19,11 +19,6 @@ spec:
             configMapKeyRef:
               name: oci-functions-operator-oci-mode
               key: OCI_AUTH_MODE
-        - name: OCI_FUNCTIONS_INVOKE_ENDPOINT
-          valueFrom:
-            configMapKeyRef:
-              name: oci-functions-operator-oci-mode
-              key: OCI_FUNCTIONS_INVOKE_ENDPOINT
         - name: OCI_RESOURCE_PRINCIPAL_VERSION
           valueFrom:
             configMapKeyRef:

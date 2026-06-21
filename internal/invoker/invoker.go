@@ -14,9 +14,10 @@ var ErrNotImplemented = errors.New("oci functions invoker is not implemented")
 
 // Target identifies the OCI Function to invoke.
 type Target struct {
-	Namespace    string
-	FunctionName string
-	FunctionOCID string
+	Namespace      string
+	FunctionName   string
+	FunctionOCID   string
+	InvokeEndpoint string
 }
 
 // Request contains one function invocation request.
@@ -39,7 +40,7 @@ type Interface interface {
 	Invoke(ctx context.Context, request Request) (Response, error)
 }
 
-// FunctionIDRequirement is an optional capability for invokers that require spec.functionId.
+// FunctionIDRequirement is an optional capability for invokers that require a resolved OCI Function OCID.
 type FunctionIDRequirement interface {
 	RequiresFunctionID() bool
 }

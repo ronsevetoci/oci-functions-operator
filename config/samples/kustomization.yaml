@@ -1,6 +1,7 @@
 resources:
 - functions_v1alpha1_function_existing.yaml
 - functions_v1alpha1_function_config.yaml
+- functions_v1alpha1_functionjob_managed.yaml
 - functions_v1alpha1_functionjob.yaml
 - functions_v1alpha1_function_oci.yaml
 - functions_v1alpha1_functionjob_oci.yaml

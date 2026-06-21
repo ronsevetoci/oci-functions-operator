@@ -33,11 +33,8 @@ case "$MODE" in
     ;;
   oci)
     echo "INVOKER_MODE=oci"
-    if [[ -z "${OCI_FUNCTIONS_INVOKE_ENDPOINT:-}" ]]; then
-      echo "error: OCI_FUNCTIONS_INVOKE_ENDPOINT is required when INVOKER_MODE=oci" >&2
-      exit 1
-    fi
-    echo "OCI_FUNCTIONS_INVOKE_ENDPOINT is set."
+    echo "No global OCI_FUNCTIONS_INVOKE_ENDPOINT is required."
+    echo "Existing-mode Function resources must set spec.invokeEndpoint; managed Functions discover status.invokeEndpoint."
     case "$OCI_MODE_AUTH" in
       workload)
         if [[ -z "${OCI_AUTH_MODE:-}" ]]; then

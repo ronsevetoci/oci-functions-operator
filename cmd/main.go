@@ -47,6 +47,12 @@ func main() {
 	}
 	setupLog.Info("configured invoker", "mode", invokerMode)
 
+	functionManager, err := selectLifecycleManager(invokerMode)
+	if err != nil {
+		setupLog.Error(err, "unable to configure Function lifecycle manager")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -62,8 +68,9 @@ func main() {
 	}
 
 	if err = (&controller.FunctionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Manager: functionManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Function")
 		os.Exit(1)

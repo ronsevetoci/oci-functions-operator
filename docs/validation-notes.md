@@ -13,7 +13,6 @@ Use this template to record results from a real OCI-mode demo run.
 - `OCI_AUTH_MODE`:
 - `OCI_CONFIG_FILE`:
 - `OCI_CONFIG_PROFILE`:
-- `OCI_FUNCTIONS_INVOKE_ENDPOINT`:
 - `OCI_RESOURCE_PRINCIPAL_VERSION`:
 - `OCI_RESOURCE_PRINCIPAL_REGION`:
 - OCI region:
@@ -22,10 +21,13 @@ Use this template to record results from a real OCI-mode demo run.
 ## Function Details
 
 - OCI Function display name:
+- Function mode (`Existing` or `Managed`):
 - Function OCID:
 - Application OCID:
-- Invoke endpoint:
+- Spec invoke endpoint, if existing mode:
+- Status invoke endpoint:
 - Function runtime/image:
+- Managed config region/compartment/subnets:
 - Expected payload shape:
 - Expected response:
 - IAM/policy notes:
@@ -75,7 +77,8 @@ Use this template to record results from a real OCI-mode demo run.
 
 - Was setup clear?
 - Were required environment variables obvious?
-- Was `Function.spec.functionId` validation clear?
+- Was existing-mode `spec.functionId` and `spec.invokeEndpoint` validation clear?
+- Was managed-mode status discovery (`applicationId`, `functionId`, `invokeEndpoint`) clear?
 - Were status fields easy to find?
 - Were events useful?
 - What should change before the next demo?
