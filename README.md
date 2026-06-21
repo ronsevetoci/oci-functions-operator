@@ -22,6 +22,16 @@ When `INVOKER_MODE=oci`, `OCI_AUTH_MODE` selects OCI SDK authentication:
 - `workload`: OKE Workload Identity. This is the default for OCI mode.
 - `config`: OCI config file/profile auth for local development only.
 
+## Demo Image
+
+The current pushed demo image is:
+
+```sh
+ghcr.io/ronsevetoci/oci-functions-operator/controller:dev
+```
+
+Use it as `OPERATOR_IMAGE` when following the [OKE deployment guide](docs/oke-deployment.md).
+
 ## Run Locally With Fake Mode
 
 Install or refresh generated manifests:

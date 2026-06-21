@@ -12,7 +12,7 @@ This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). The MVP in
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The operator image is built and pushed to a registry reachable by OKE.
+- The operator image is built and pushed to a registry reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
 - OKE Workload Identity is available for the cluster and service account.
 - An existing OCI Function is already deployed.
 - You know the function OCID and function `invokeEndpoint`.
@@ -33,7 +33,7 @@ kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.or
 Fake mode is useful for checking the Kubernetes installation path before wiring OCI invocation.
 
 ```sh
-export OPERATOR_IMAGE="<region>.ocir.io/<namespace>/oci-functions-operator:<tag>"
+export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
 
 kubectl apply -k config/default
 kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
@@ -83,7 +83,7 @@ Adjust the compartment, resource family, and conditions to match your tenancy po
 Set cluster-specific values:
 
 ```sh
-export OPERATOR_IMAGE="<region>.ocir.io/<namespace>/oci-functions-operator:<tag>"
+export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
 export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"
 export OCI_RESOURCE_PRINCIPAL_REGION="<oci-region>"
 ```
