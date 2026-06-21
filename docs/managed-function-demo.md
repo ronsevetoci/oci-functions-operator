@@ -19,15 +19,42 @@ There is no global `OCI_FUNCTIONS_INVOKE_ENDPOINT` in managed mode.
 - You have a Jeddah subnet OCID that OCI Functions can use.
 - You have an OCI Functions-compatible container image reachable from OCI Functions.
 
-The image must be built for OCI Functions and stored where OCI Functions can pull it, such as OCIR with the right repository access.
+The operator controller image and the function runtime image are different images:
 
-## 1. Edit The Managed Function Sample
+- The operator image runs the Kubernetes controller manager.
+- The function image is the container OCI Functions runs for `managed-hello`.
+
+The function image must be built for OCI Functions and stored where OCI Functions can pull it, such as GHCR or OCIR with the right repository access.
+
+## 1. Build And Push The Sample Function Image
+
+This repo includes a minimal Python FDK function under `examples/hello-function`.
+
+Build it with Podman for `linux/amd64`, which is the platform expected by OCI Functions:
+
+```sh
+podman build --platform linux/amd64 -t ghcr.io/ronsevet/oci-functions-operator/hello-function:dev examples/hello-function
+```
+
+Push it to GHCR:
+
+```sh
+podman push ghcr.io/ronsevet/oci-functions-operator/hello-function:dev
+```
+
+Use this pushed image as `<FUNCTION_IMAGE>` in the managed Function sample:
+
+```text
+ghcr.io/ronsevet/oci-functions-operator/hello-function:dev
+```
+
+## 2. Edit The Managed Function Sample
 
 Open `config/samples/functions_v1alpha1_function_managed.yaml` and replace:
 
 - `<COMPARTMENT_OCID>` with the compartment OCID where the application/function should be managed.
 - `<SUBNET_OCID>` with a subnet OCID in Jeddah that OCI Functions can use.
-- `<FUNCTION_IMAGE>` with the full function image reference.
+- `<FUNCTION_IMAGE>` with the full function image reference, such as `ghcr.io/ronsevet/oci-functions-operator/hello-function:dev`.
 
 The sample uses:
 
@@ -60,7 +87,7 @@ spec:
       GREETING: "hello from oke functions operator"
 ```
 
-## 2. Apply And Watch The Function
+## 3. Apply And Watch The Function
 
 ```sh
 kubectl apply -f config/samples/functions_v1alpha1_function_managed.yaml
@@ -79,7 +106,7 @@ Wait for `Ready=True`. Managed mode should populate:
 - `status.functionId`
 - `status.invokeEndpoint`
 
-## 3. Submit A FunctionJob
+## 4. Submit A FunctionJob
 
 The sample FunctionJob references `managed-hello`:
 
@@ -159,6 +186,7 @@ Checks:
 - Replace `<FUNCTION_IMAGE>` with a valid OCI Functions-compatible image.
 - Confirm the image region and repository are reachable from OCI Functions.
 - Confirm repository policies allow OCI Functions to pull the image.
+- If you use GHCR, confirm the image/package visibility and credentials model are compatible with OCI Functions.
 
 ### Invoke Endpoint Not Discovered
 
