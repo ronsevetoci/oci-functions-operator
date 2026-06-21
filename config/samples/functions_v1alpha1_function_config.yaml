@@ -1,0 +1,15 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: desired-hello
+spec:
+  config:
+    applicationOcid: ocid1.fnapp.oc1.iad.exampleuniqueid
+    displayName: desired-hello
+    image: iad.ocir.io/example/functions/hello:latest
+    memoryInMB: 128
+    timeoutInSeconds: 30
+    environment:
+      LOG_LEVEL: info
+    freeformTags:
+      managed-by: oci-functions-operator

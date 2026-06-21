@@ -1,0 +1,6 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: oci-existing-hello
+spec:
+  functionId: ocid1.fnfunc.oc1.iad.exampleuniqueid

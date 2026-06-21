@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${INVOKER_MODE:-fake}"
+
+echo "Checking demo prerequisites..."
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "error: kubectl is not available on PATH" >&2
+  exit 1
+fi
+
+echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client=true)"
+
+if ! kubectl get crd functions.functions.oci.oracle.com >/dev/null 2>&1; then
+  echo "error: Function CRD is not installed. Run: make manifests && kubectl apply -k config/crd" >&2
+  exit 1
+fi
+
+if ! kubectl get crd functionjobs.functions.oci.oracle.com >/dev/null 2>&1; then
+  echo "error: FunctionJob CRD is not installed. Run: make manifests && kubectl apply -k config/crd" >&2
+  exit 1
+fi
+
+case "$MODE" in
+  fake)
+    if [[ -z "${INVOKER_MODE:-}" ]]; then
+      echo "INVOKER_MODE is not set; manager defaults to fake."
+    else
+      echo "INVOKER_MODE=fake"
+    fi
+    ;;
+  oci)
+    echo "INVOKER_MODE=oci"
+    if [[ -z "${OCI_FUNCTIONS_INVOKE_ENDPOINT:-}" ]]; then
+      echo "error: OCI_FUNCTIONS_INVOKE_ENDPOINT is required when INVOKER_MODE=oci" >&2
+      exit 1
+    fi
+    echo "OCI_FUNCTIONS_INVOKE_ENDPOINT is set."
+    ;;
+  *)
+    echo "error: unsupported INVOKER_MODE=$MODE. Supported values: fake, oci" >&2
+    exit 1
+    ;;
+esac
+
+echo "Demo prerequisites look good."

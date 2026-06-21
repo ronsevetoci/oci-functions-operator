@@ -1,0 +1,8 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: existing-hello
+  labels:
+    demo: oci-functions-operator-fake
+spec:
+  functionId: ocid1.fnfunc.oc1.iad.exampleuniqueid
