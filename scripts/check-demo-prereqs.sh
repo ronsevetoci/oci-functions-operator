@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODE="${INVOKER_MODE:-fake}"
+OCI_MODE_AUTH="${OCI_AUTH_MODE:-workload}"
 
 echo "Checking demo prerequisites..."
 
@@ -37,6 +38,30 @@ case "$MODE" in
       exit 1
     fi
     echo "OCI_FUNCTIONS_INVOKE_ENDPOINT is set."
+    case "$OCI_MODE_AUTH" in
+      workload)
+        if [[ -z "${OCI_AUTH_MODE:-}" ]]; then
+          echo "OCI_AUTH_MODE is not set; OCI mode defaults to workload."
+        else
+          echo "OCI_AUTH_MODE=workload"
+        fi
+        echo "OKE workload identity is expected; no OCI config or PEM Secret is required."
+        ;;
+      config)
+        echo "OCI_AUTH_MODE=config"
+        CONFIG_FILE="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+          echo "error: OCI config file not found at $CONFIG_FILE" >&2
+          exit 1
+        fi
+        echo "OCI_CONFIG_FILE=$CONFIG_FILE"
+        echo "OCI_CONFIG_PROFILE=${OCI_CONFIG_PROFILE:-DEFAULT}"
+        ;;
+      *)
+        echo "error: unsupported OCI_AUTH_MODE=$OCI_MODE_AUTH. Supported values: workload, config" >&2
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "error: unsupported INVOKER_MODE=$MODE. Supported values: fake, oci" >&2

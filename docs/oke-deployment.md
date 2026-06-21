@@ -7,15 +7,16 @@ This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). The MVP in
 - CRDs for `Function` and `FunctionJob`.
 - A controller manager Deployment in `oci-functions-operator-system`.
 - RBAC for watching `Function` and `FunctionJob` resources and writing status/events.
-- An invoker mode selected by `INVOKER_MODE`.
+- OCI mode configured for OKE Workload Identity.
 
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
 - The operator image is built and pushed to a registry reachable by OKE.
+- OKE Workload Identity is available for the cluster and service account.
 - An existing OCI Function is already deployed.
-- The OCI principal used by the manager can invoke that function.
-- For OCI mode, you know the function `invokeEndpoint` and function OCID.
+- You know the function OCID and function `invokeEndpoint`.
+- OCI IAM policy allows this Kubernetes workload to invoke the target function.
 
 ## Install CRDs
 
@@ -29,17 +30,11 @@ kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.or
 
 ## Deploy The Manager With Fake Mode
 
-Fake mode is useful for checking the Kubernetes installation path before wiring OCI credentials.
-
-Set your image:
+Fake mode is useful for checking the Kubernetes installation path before wiring OCI invocation.
 
 ```sh
 export OPERATOR_IMAGE="<region>.ocir.io/<namespace>/oci-functions-operator:<tag>"
-```
 
-Deploy:
-
-```sh
 kubectl apply -k config/default
 kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
@@ -47,78 +42,74 @@ kubectl -n oci-functions-operator-system rollout status deployment/oci-functions
 
 The base manifest sets `INVOKER_MODE=fake`.
 
-## Deploy The Manager With OCI Mode
+## OKE Workload Identity Auth
 
-OCI mode invokes existing OCI Functions through the OCI Go SDK.
+For OKE, OCI mode uses the OCI Go SDK OKE Workload Identity provider:
 
-Required environment variables:
+```text
+INVOKER_MODE=oci
+OCI_AUTH_MODE=workload
+```
+
+The operator does not mount a developer `~/.oci/config` file or private PEM key in the OKE path.
+
+Required manager environment for OCI mode on OKE:
 
 - `INVOKER_MODE=oci`
+- `OCI_AUTH_MODE=workload`
 - `OCI_FUNCTIONS_INVOKE_ENDPOINT`: the target function invoke endpoint, without an API path.
+- `OCI_RESOURCE_PRINCIPAL_VERSION`: use `2.2` for the current SDK workload identity provider.
+- `OCI_RESOURCE_PRINCIPAL_REGION`: the OCI region for the workload identity provider, such as `us-ashburn-1`.
 
-Optional environment variables:
+The SDK also uses the pod service account token, Kubernetes service account CA, and `KUBERNETES_SERVICE_HOST` provided by Kubernetes/OKE.
 
-- `OCI_CONFIG_FILE`: config file path inside the manager container. The sample overlay uses `/oci/config/config`.
-- `OCI_CONFIG_PROFILE`: OCI config profile. The sample overlay defaults to `DEFAULT`.
+### IAM Policy
 
-### Supported Auth Assumptions
+Grant the OKE workload permission to invoke the existing function. A typical policy shape is:
 
-The current MVP uses OCI Go SDK config/profile authentication. For OKE deployment, the documented path is mounting an OCI config file and API signing key into the manager pod as a Kubernetes Secret.
-
-The current MVP does not yet provide first-class configuration for instance principals, workload identity, dynamic groups, or Resource Principal auth. Those may work only after code and deployment support are added in a future iteration.
-
-### Prepare OCI Config Secret
-
-The OCI mode overlay expects this Secret to exist. It intentionally does not generate credentials from the example config file.
-
-Create a temporary directory outside the repo with your real OCI config and key:
-
-```sh
-mkdir -p /tmp/oci-functions-operator-oci
-cp "$HOME/.oci/config" /tmp/oci-functions-operator-oci/config
-cp "$HOME/.oci/oci_api_key.pem" /tmp/oci-functions-operator-oci/oci_api_key.pem
+```text
+Allow any-user to use fn-functions in compartment <functions-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
 ```
 
-Make sure the `key_file` in `/tmp/oci-functions-operator-oci/config` matches the mounted path:
+Adjust the compartment, resource family, and conditions to match your tenancy policy model.
 
-```ini
-key_file=/oci/config/oci_api_key.pem
-```
+## Deploy The Manager With OCI Mode
 
-Create or update the secret:
+Set cluster-specific values:
 
 ```sh
-kubectl create namespace oci-functions-operator-system --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n oci-functions-operator-system create secret generic oci-functions-operator-oci-config \
-  --from-file=config=/tmp/oci-functions-operator-oci/config \
-  --from-file=oci_api_key.pem=/tmp/oci-functions-operator-oci/oci_api_key.pem \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-### Apply The OCI Mode Overlay
-
-Copy the sample overlay or edit it with your endpoint/profile:
-
-```sh
-export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"
 export OPERATOR_IMAGE="<region>.ocir.io/<namespace>/oci-functions-operator:<tag>"
+export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"
+export OCI_RESOURCE_PRINCIPAL_REGION="<oci-region>"
 ```
 
-Patch the generated config map after applying the overlay, or update `config/overlays/oci-mode/kustomization.yaml` before deployment:
+Apply the OCI mode overlay, then replace the sample ConfigMap values:
 
 ```sh
 kubectl apply -k config/overlays/oci-mode
 
 kubectl -n oci-functions-operator-system create configmap oci-functions-operator-oci-mode \
   --from-literal=INVOKER_MODE=oci \
-  --from-literal=OCI_CONFIG_PROFILE="${OCI_CONFIG_PROFILE:-DEFAULT}" \
+  --from-literal=OCI_AUTH_MODE=workload \
   --from-literal=OCI_FUNCTIONS_INVOKE_ENDPOINT="$OCI_FUNCTIONS_INVOKE_ENDPOINT" \
+  --from-literal=OCI_RESOURCE_PRINCIPAL_VERSION=2.2 \
+  --from-literal=OCI_RESOURCE_PRINCIPAL_REGION="$OCI_RESOURCE_PRINCIPAL_REGION" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
 kubectl -n oci-functions-operator-system rollout restart deployment/oci-functions-operator-controller-manager
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
+```
+
+Confirm no local OCI credential Secret is mounted:
+
+```sh
+kubectl -n oci-functions-operator-system get deployment oci-functions-operator-controller-manager -o yaml
 ```
 
 ## Invoke An Existing Function
@@ -168,20 +159,22 @@ kubectl get events --field-selector involvedObject.kind=FunctionJob,involvedObje
 
 ## Troubleshooting
 
-### Auth Errors
+### Workload Identity Auth Errors
 
 Symptoms:
 
-- `status.lastError` contains `oci auth error`.
-- Manager logs mention `401`, `403`, signing, key, tenancy, user, or policy failures.
+- Manager fails startup with `configure OCI Workload Identity auth provider`.
+- `FunctionJob` status contains `oci auth error`.
+- Manager logs mention `401`, `403`, `resource principal`, `Workload Identity`, service account token, or `OCI_RESOURCE_PRINCIPAL_*`.
 
 Checks:
 
-- Confirm the mounted config exists: `kubectl -n oci-functions-operator-system exec deploy/oci-functions-operator-controller-manager -- ls -l /oci/config`.
-- Confirm `OCI_CONFIG_FILE=/oci/config/config`.
-- Confirm `key_file=/oci/config/oci_api_key.pem` in the mounted config.
-- Confirm the OCI user or principal has permission to invoke the target function.
-- Confirm the config profile matches `OCI_CONFIG_PROFILE`.
+- Confirm `OCI_AUTH_MODE=workload` in the manager pod.
+- Confirm `OCI_RESOURCE_PRINCIPAL_VERSION=2.2` and `OCI_RESOURCE_PRINCIPAL_REGION=<region>` are set.
+- Confirm the pod uses service account `oci-functions-operator-controller-manager`.
+- Confirm the service account token is mounted in the pod.
+- Confirm the OKE cluster supports Workload Identity for the workload.
+- Confirm the IAM policy matches the namespace, service account, cluster OCID, and function compartment.
 
 ### Invoke Endpoint Errors
 
@@ -194,6 +187,7 @@ Checks:
 
 - Confirm the endpoint comes from the function `invokeEndpoint`.
 - Do not include `/20181201` or another API path.
+- Confirm the endpoint region matches `OCI_RESOURCE_PRINCIPAL_REGION`.
 - Confirm the OKE cluster can reach the endpoint.
 - Confirm DNS and egress rules for worker nodes.
 
@@ -209,7 +203,7 @@ Checks:
 - Use `spec.functionId`, not only the deprecated `spec.existingFunctionOcid`, for OCI mode.
 - Confirm the OCID starts with `ocid1.fnfunc`.
 - Confirm the function exists in the same region as the invoke endpoint.
-- Confirm the principal has permission to read/invoke that function.
+- Confirm the workload identity policy allows invoking that function.
 
 ### Missing Kubernetes RBAC
 
@@ -221,10 +215,14 @@ Symptoms:
 
 Checks:
 
-- Confirm RBAC was applied: `kubectl apply -k config/rbac`.
+- Reapply RBAC: `kubectl apply -k config/rbac`.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
 - Confirm generated `ClusterRole` includes `functionjobs/status`, `functions`, and core `events`.
 - Reapply the full default or OCI overlay if RBAC drifted.
+
+## Local Config Auth
+
+`OCI_AUTH_MODE=config` is for local development runs, not the OKE deployment path. See [oci-mode-demo.md](oci-mode-demo.md) for the local `go run` workflow that uses `OCI_CONFIG_FILE` and `OCI_CONFIG_PROFILE`.
 
 ## Current MVP Boundary
 

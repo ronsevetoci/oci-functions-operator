@@ -10,9 +10,12 @@ Use this template to record results from a real OCI-mode demo run.
 - Kubernetes version:
 - Namespace:
 - `INVOKER_MODE`:
+- `OCI_AUTH_MODE`:
 - `OCI_CONFIG_FILE`:
 - `OCI_CONFIG_PROFILE`:
 - `OCI_FUNCTIONS_INVOKE_ENDPOINT`:
+- `OCI_RESOURCE_PRINCIPAL_VERSION`:
+- `OCI_RESOURCE_PRINCIPAL_REGION`:
 - OCI region:
 - OCI tenancy/profile notes:
 

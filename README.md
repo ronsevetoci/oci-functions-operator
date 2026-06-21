@@ -17,6 +17,11 @@ Supported values:
 - `fake`: local deterministic invoker. This is the default.
 - `oci`: OCI Go SDK-backed invoker for existing OCI Functions.
 
+When `INVOKER_MODE=oci`, `OCI_AUTH_MODE` selects OCI SDK authentication:
+
+- `workload`: OKE Workload Identity. This is the default for OCI mode.
+- `config`: OCI config file/profile auth for local development only.
+
 ## Run Locally With Fake Mode
 
 Install or refresh generated manifests:
@@ -52,7 +57,7 @@ scripts/demo-fake.sh
 
 ## Run With OCI Mode
 
-OCI mode uses the OCI Go SDK default config/auth behavior. For local development, that means:
+OCI mode defaults to OKE Workload Identity when `OCI_AUTH_MODE` is unset. For local development outside OKE, set `OCI_AUTH_MODE=config` and use OCI config-file auth:
 
 - The OCI config file defaults to `$HOME/.oci/config`.
 - `OCI_CONFIG_FILE` can point at a different config file.
@@ -64,6 +69,7 @@ Example environment:
 
 ```sh
 export INVOKER_MODE=oci
+export OCI_AUTH_MODE=config
 export OCI_CONFIG_FILE="$HOME/.oci/config"
 export OCI_CONFIG_PROFILE=DEFAULT
 export OCI_FUNCTIONS_INVOKE_ENDPOINT="https://<function-invoke-endpoint>"

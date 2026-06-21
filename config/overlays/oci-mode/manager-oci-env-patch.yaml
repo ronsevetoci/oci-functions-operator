@@ -14,23 +14,23 @@ spec:
             configMapKeyRef:
               name: oci-functions-operator-oci-mode
               key: INVOKER_MODE
-        - name: OCI_CONFIG_FILE
-          value: /oci/config/config
-        - name: OCI_CONFIG_PROFILE
+        - name: OCI_AUTH_MODE
           valueFrom:
             configMapKeyRef:
               name: oci-functions-operator-oci-mode
-              key: OCI_CONFIG_PROFILE
+              key: OCI_AUTH_MODE
         - name: OCI_FUNCTIONS_INVOKE_ENDPOINT
           valueFrom:
             configMapKeyRef:
               name: oci-functions-operator-oci-mode
               key: OCI_FUNCTIONS_INVOKE_ENDPOINT
-        volumeMounts:
-        - name: oci-config
-          mountPath: /oci/config
-          readOnly: true
-      volumes:
-      - name: oci-config
-        secret:
-          secretName: oci-functions-operator-oci-config
+        - name: OCI_RESOURCE_PRINCIPAL_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: oci-functions-operator-oci-mode
+              key: OCI_RESOURCE_PRINCIPAL_VERSION
+        - name: OCI_RESOURCE_PRINCIPAL_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: oci-functions-operator-oci-mode
+              key: OCI_RESOURCE_PRINCIPAL_REGION

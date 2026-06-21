@@ -8,10 +8,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
+	ociauth "github.com/oracle/oci-go-sdk/v65/common/auth"
 	ocifunctions "github.com/oracle/oci-go-sdk/v65/functions"
 )
 
@@ -89,6 +92,197 @@ func TestNewOCIFromEnvironmentRequiresEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), EnvOCIFunctionsInvokeEndpoint) {
 		t.Fatalf("error = %q, want endpoint name", err)
+	}
+}
+
+func TestNormalizeOCIAuthModeDefaultsToWorkload(t *testing.T) {
+	authMode, err := normalizeOCIAuthMode("")
+	if err != nil {
+		t.Fatalf("normalizeOCIAuthMode returned error: %v", err)
+	}
+	if authMode != OCIAuthModeWorkload {
+		t.Fatalf("auth mode = %q, want %q", authMode, OCIAuthModeWorkload)
+	}
+}
+
+func TestNormalizeOCIAuthModeRejectsUnknownMode(t *testing.T) {
+	_, err := normalizeOCIAuthMode("bogus")
+	if err == nil {
+		t.Fatalf("normalizeOCIAuthMode returned nil error, want unsupported mode error")
+	}
+	if !strings.Contains(err.Error(), "unsupported "+EnvOCIAuthMode) {
+		t.Fatalf("error = %q, want unsupported auth mode message", err)
+	}
+}
+
+func TestNewOCIDefaultsToWorkloadAuth(t *testing.T) {
+	workloadProvider := common.NewRawConfigurationProvider("tenancy", "user", "us-ashburn-1", "fingerprint", "private-key", nil)
+	configProvider := common.NewRawConfigurationProvider("config-tenancy", "config-user", "us-phoenix-1", "config-fingerprint", "private-key", nil)
+	workloadCalled := false
+	configCalled := false
+	clientCalled := false
+
+	_, err := NewOCI(OCIOptions{
+		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+			workloadCalled = true
+			return workloadProvider, nil
+		},
+		ConfigFileProviderFactory: func() common.ConfigurationProvider {
+			configCalled = true
+			return configProvider
+		},
+		ClientFactory: func(configProvider common.ConfigurationProvider, endpoint string) (functionsInvokeClient, error) {
+			clientCalled = true
+			if configProvider != workloadProvider {
+				t.Fatalf("config provider = %#v, want workload provider", configProvider)
+			}
+			if endpoint != "https://functions.us-ashburn-1.oci.oraclecloud.com" {
+				t.Fatalf("endpoint = %q, want normalized endpoint", endpoint)
+			}
+			return &fakeFunctionsInvokeClient{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOCI returned error: %v", err)
+	}
+	if !workloadCalled {
+		t.Fatalf("workload provider factory was not called")
+	}
+	if configCalled {
+		t.Fatalf("config provider factory was called, want workload default")
+	}
+	if !clientCalled {
+		t.Fatalf("client factory was not called")
+	}
+}
+
+func TestNewOCIWorkloadModeWrapsUnavailableProvider(t *testing.T) {
+	expectedErr := errors.New("not running in OKE workload identity")
+
+	_, err := NewOCI(OCIOptions{
+		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		AuthMode:       OCIAuthModeWorkload,
+		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+			return nil, expectedErr
+		},
+		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
+			t.Fatalf("client factory was called before workload auth provider succeeded")
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatalf("NewOCI returned nil error, want workload auth provider error")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, expectedErr)
+	}
+	if !strings.Contains(err.Error(), "configure OCI Workload Identity auth provider") {
+		t.Fatalf("error = %q, want workload identity context", err)
+	}
+}
+
+func TestNewOCIFromEnvironmentWorkloadModeReportsMissingProviderEnvironment(t *testing.T) {
+	t.Setenv(EnvOCIFunctionsInvokeEndpoint, "https://functions.us-ashburn-1.oci.oraclecloud.com")
+	t.Setenv(EnvOCIAuthMode, OCIAuthModeWorkload)
+	unsetEnv(t, ociauth.ResourcePrincipalVersionEnvVar)
+
+	_, err := NewOCIFromEnvironment()
+	if err == nil {
+		t.Fatalf("NewOCIFromEnvironment returned nil error, want workload auth provider error")
+	}
+	if !strings.Contains(err.Error(), "configure OCI Workload Identity auth provider") {
+		t.Fatalf("error = %q, want workload identity context", err)
+	}
+	if !strings.Contains(err.Error(), ociauth.ResourcePrincipalVersionEnvVar) {
+		t.Fatalf("error = %q, want missing %s detail", err, ociauth.ResourcePrincipalVersionEnvVar)
+	}
+}
+
+func TestNewOCIConfigModeUsesConfigProvider(t *testing.T) {
+	configProvider := common.NewRawConfigurationProvider("tenancy", "user", "us-ashburn-1", "fingerprint", "private-key", nil)
+	configCalled := false
+
+	_, err := NewOCI(OCIOptions{
+		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		AuthMode:       OCIAuthModeConfig,
+		ConfigFileProviderFactory: func() common.ConfigurationProvider {
+			configCalled = true
+			return configProvider
+		},
+		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+			t.Fatalf("workload provider factory was called for config auth mode")
+			return nil, nil
+		},
+		ClientFactory: func(got common.ConfigurationProvider, _ string) (functionsInvokeClient, error) {
+			if got != configProvider {
+				t.Fatalf("config provider = %#v, want config file provider", got)
+			}
+			return &fakeFunctionsInvokeClient{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOCI returned error: %v", err)
+	}
+	if !configCalled {
+		t.Fatalf("config provider factory was not called")
+	}
+}
+
+func TestConfigProviderFromEnvironmentUsesConfigFileAndProfile(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config")
+	config := `
+[DEFAULT]
+user=ocid1.user.oc1..default
+fingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00
+tenancy=ocid1.tenancy.oc1..default
+region=us-phoenix-1
+key_file=/does/not/matter
+
+[LOCAL]
+user=ocid1.user.oc1..local
+fingerprint=11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11
+tenancy=ocid1.tenancy.oc1..local
+region=us-ashburn-1
+key_file=/does/not/matter
+`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatalf("write OCI config fixture: %v", err)
+	}
+	t.Setenv(EnvOCIConfigFile, configPath)
+	t.Setenv(EnvOCIConfigProfile, "LOCAL")
+
+	configProvider := ociConfigProviderFromEnvironment()
+	region, err := configProvider.Region()
+	if err != nil {
+		t.Fatalf("Region returned error: %v", err)
+	}
+	if region != "us-ashburn-1" {
+		t.Fatalf("region = %q, want LOCAL profile region", region)
+	}
+	userOCID, err := configProvider.UserOCID()
+	if err != nil {
+		t.Fatalf("UserOCID returned error: %v", err)
+	}
+	if userOCID != "ocid1.user.oc1..local" {
+		t.Fatalf("user OCID = %q, want LOCAL profile user", userOCID)
+	}
+}
+
+func TestNewOCIRejectsInvalidAuthMode(t *testing.T) {
+	_, err := NewOCI(OCIOptions{
+		InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+		AuthMode:       "bogus",
+		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
+			t.Fatalf("client factory was called for invalid auth mode")
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatalf("NewOCI returned nil error, want invalid auth mode error")
+	}
+	if !strings.Contains(err.Error(), "unsupported "+EnvOCIAuthMode) {
+		t.Fatalf("error = %q, want unsupported auth mode message", err)
 	}
 }
 
@@ -290,4 +484,19 @@ func (f *fakeFunctionsInvokeClient) InvokeFunction(_ context.Context, request oc
 		f.body = body
 	}
 	return f.response, f.err
+}
+
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	previous, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(key, previous)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }

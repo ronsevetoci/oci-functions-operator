@@ -103,7 +103,8 @@ When one or more payloads exhaust retries:
 
 `INVOKER_MODE=oci` constructs an OCI Go SDK Functions invoke client. It requires:
 
-- OCI SDK-compatible local config or environment authentication.
+- `OCI_AUTH_MODE=workload` for OKE Workload Identity, which is the default when `OCI_AUTH_MODE` is unset.
+- `OCI_AUTH_MODE=config` only for local development with an OCI config file/profile.
 - `OCI_FUNCTIONS_INVOKE_ENDPOINT` set to the existing function's invoke endpoint.
 - referenced `Function` resources to use `spec.functionId`.
 
@@ -117,4 +118,4 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 - Retry behavior is local to reconciliation and status, not a durable external work queue.
 - There is no admission webhook yet for cross-field validation beyond CRD CEL rules.
 - Function response bodies are captured internally by the invoker response but are not surfaced in `FunctionJob` status.
-- OCI auth modes beyond default SDK config/profile behavior have not been packaged as first-class operator settings.
+- OCI mode currently supports OKE Workload Identity and local OCI config-file auth only.

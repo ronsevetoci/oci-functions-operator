@@ -16,16 +16,24 @@ import (
 	"strings"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
+	ociauth "github.com/oracle/oci-go-sdk/v65/common/auth"
 	ocifunctions "github.com/oracle/oci-go-sdk/v65/functions"
 )
 
 const (
 	// EnvOCIFunctionsInvokeEndpoint is the endpoint used by the OCI Functions invoke client.
 	EnvOCIFunctionsInvokeEndpoint = "OCI_FUNCTIONS_INVOKE_ENDPOINT"
+	// EnvOCIAuthMode selects the OCI SDK auth provider used in OCI invoker mode.
+	EnvOCIAuthMode = "OCI_AUTH_MODE"
 	// EnvOCIConfigProfile optionally selects a profile from the OCI config file.
 	EnvOCIConfigProfile = "OCI_CONFIG_PROFILE"
 	// EnvOCIConfigFile optionally selects a non-default OCI config file path.
 	EnvOCIConfigFile = "OCI_CONFIG_FILE"
+
+	// OCIAuthModeWorkload uses the OKE Workload Identity auth provider.
+	OCIAuthModeWorkload = "workload"
+	// OCIAuthModeConfig uses a local OCI config file/profile.
+	OCIAuthModeConfig = "config"
 )
 
 const maxOCIErrorBodyBytes = 512
@@ -34,10 +42,18 @@ type functionsInvokeClient interface {
 	InvokeFunction(ctx context.Context, request ocifunctions.InvokeFunctionRequest) (ocifunctions.InvokeFunctionResponse, error)
 }
 
+type functionsInvokeClientFactory func(common.ConfigurationProvider, string) (functionsInvokeClient, error)
+type workloadIdentityProviderFactory func() (common.ConfigurationProvider, error)
+type configFileProviderFactory func() common.ConfigurationProvider
+
 // OCIOptions configures an OCI-backed invoker.
 type OCIOptions struct {
-	InvokeEndpoint string
-	ConfigProvider common.ConfigurationProvider
+	InvokeEndpoint                  string
+	AuthMode                        string
+	ConfigProvider                  common.ConfigurationProvider
+	WorkloadIdentityProviderFactory workloadIdentityProviderFactory
+	ConfigFileProviderFactory       configFileProviderFactory
+	ClientFactory                   functionsInvokeClientFactory
 }
 
 // OCI invokes OCI Functions through the OCI Go SDK.
@@ -50,11 +66,11 @@ func (o *OCI) RequiresFunctionID() bool {
 	return true
 }
 
-// NewOCIFromEnvironment constructs an OCI invoker from local OCI SDK configuration.
+// NewOCIFromEnvironment constructs an OCI invoker from OCI-related environment variables.
 func NewOCIFromEnvironment() (*OCI, error) {
 	return NewOCI(OCIOptions{
 		InvokeEndpoint: os.Getenv(EnvOCIFunctionsInvokeEndpoint),
-		ConfigProvider: ociConfigProviderFromEnvironment(),
+		AuthMode:       os.Getenv(EnvOCIAuthMode),
 	})
 }
 
@@ -67,15 +83,72 @@ func NewOCI(options OCIOptions) (*OCI, error) {
 
 	configProvider := options.ConfigProvider
 	if configProvider == nil {
-		configProvider = ociConfigProviderFromEnvironment()
+		configProvider, err = ociConfigProviderForAuthMode(options)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	client, err := ocifunctions.NewFunctionsInvokeClientWithConfigurationProvider(configProvider, endpoint)
+	clientFactory := options.ClientFactory
+	if clientFactory == nil {
+		clientFactory = newFunctionsInvokeClient
+	}
+
+	client, err := clientFactory(configProvider, endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("configure OCI Functions invoke client: %w", err)
 	}
 
 	return &OCI{client: client}, nil
+}
+
+func newFunctionsInvokeClient(configProvider common.ConfigurationProvider, endpoint string) (functionsInvokeClient, error) {
+	return ocifunctions.NewFunctionsInvokeClientWithConfigurationProvider(configProvider, endpoint)
+}
+
+func ociConfigProviderForAuthMode(options OCIOptions) (common.ConfigurationProvider, error) {
+	authMode, err := normalizeOCIAuthMode(options.AuthMode)
+	if err != nil {
+		return nil, err
+	}
+
+	switch authMode {
+	case OCIAuthModeWorkload:
+		providerFactory := options.WorkloadIdentityProviderFactory
+		if providerFactory == nil {
+			providerFactory = workloadIdentityConfigProviderFromEnvironment
+		}
+		configProvider, err := providerFactory()
+		if err != nil {
+			return nil, fmt.Errorf("configure OCI Workload Identity auth provider: %w", err)
+		}
+		return configProvider, nil
+	case OCIAuthModeConfig:
+		providerFactory := options.ConfigFileProviderFactory
+		if providerFactory == nil {
+			providerFactory = ociConfigProviderFromEnvironment
+		}
+		return providerFactory(), nil
+	default:
+		return nil, fmt.Errorf("unsupported %s %q; supported values are %q and %q", EnvOCIAuthMode, options.AuthMode, OCIAuthModeWorkload, OCIAuthModeConfig)
+	}
+}
+
+func normalizeOCIAuthMode(value string) (string, error) {
+	authMode := strings.ToLower(strings.TrimSpace(value))
+	if authMode == "" {
+		return OCIAuthModeWorkload, nil
+	}
+	switch authMode {
+	case OCIAuthModeWorkload, OCIAuthModeConfig:
+		return authMode, nil
+	default:
+		return "", fmt.Errorf("unsupported %s %q; supported values are %q and %q", EnvOCIAuthMode, value, OCIAuthModeWorkload, OCIAuthModeConfig)
+	}
+}
+
+func workloadIdentityConfigProviderFromEnvironment() (common.ConfigurationProvider, error) {
+	return ociauth.OkeWorkloadIdentityConfigurationProvider()
 }
 
 func ociConfigProviderFromEnvironment() common.ConfigurationProvider {

@@ -7,8 +7,10 @@ configMapGenerator:
 - name: oci-functions-operator-oci-mode
   literals:
   - INVOKER_MODE=oci
-  - OCI_CONFIG_PROFILE=DEFAULT
+  - OCI_AUTH_MODE=workload
   - OCI_FUNCTIONS_INVOKE_ENDPOINT=https://replace-with-function-invoke-endpoint
+  - OCI_RESOURCE_PRINCIPAL_VERSION=2.2
+  - OCI_RESOURCE_PRINCIPAL_REGION=replace-with-oci-region
 
 patches:
 - path: manager-oci-env-patch.yaml
