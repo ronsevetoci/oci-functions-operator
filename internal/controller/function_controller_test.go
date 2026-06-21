@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -173,6 +175,12 @@ func TestFunctionReconcilerManagedModeWaitsForFunctionIDAndInvokeEndpoint(t *tes
 	if manager.desired.Region != "me-jeddah-1" {
 		t.Fatalf("desired region = %q, want me-jeddah-1", manager.desired.Region)
 	}
+	if !reflect.DeepEqual(manager.desired.ApplicationNSGIDs, function.Spec.Config.NSGIDs) {
+		t.Fatalf("desired application NSGs = %#v, want %#v", manager.desired.ApplicationNSGIDs, function.Spec.Config.NSGIDs)
+	}
+	if !manager.desired.ManageApplicationNSGIDs {
+		t.Fatalf("desired ManageApplicationNSGIDs = false, want true when spec.config.nsgIds is set")
+	}
 
 	var updated functionsv1alpha1.Function
 	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
@@ -240,18 +248,64 @@ func TestFunctionReconcilerManagedModeMarksReady(t *testing.T) {
 	}
 }
 
-func TestFunctionReconcilerManagedModeRecordsLifecycleErrors(t *testing.T) {
+func TestFunctionReconcilerManagedModeRecordsLifecycleEvents(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
 	function := managedFunction("hello", "default")
-	manager := &fakeLifecycleManager{err: errors.New("oci auth error")}
+	manager := &fakeLifecycleManager{
+		state: lifecycle.FunctionState{
+			ApplicationID:  "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
+			FunctionID:     "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid",
+			InvokeEndpoint: "https://functions.me-jeddah-1.oci.oraclecloud.com",
+			Ready:          true,
+			Message:        "Managed OCI Function is ready.",
+			Events: []lifecycle.Event{{
+				Type:    lifecycle.EventTypeNormal,
+				Reason:  "ApplicationNSGsUpdated",
+				Message: "Updated OCI Functions application \"demo-app\" NSG configuration to [ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid].",
+			}},
+		},
+	}
+	recorder := record.NewFakeRecorder(10)
 
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&functionsv1alpha1.Function{}).
 		WithObjects(function).
 		Build()
-	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager, Recorder: recorder}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	assertEventContains(t, drainEvents(recorder), "Normal ApplicationNSGsUpdated")
+}
+
+func TestFunctionReconcilerManagedModeRecordsApplicationNSGUpdateFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	manager := &fakeLifecycleManager{
+		state: lifecycle.FunctionState{
+			ApplicationID: "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
+			Events: []lifecycle.Event{{
+				Type:    lifecycle.EventTypeWarning,
+				Reason:  "ApplicationNSGUpdateFailed",
+				Message: "Failed to update OCI Functions application \"demo-app\" NSG configuration to [ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid]: not authorized",
+			}},
+		},
+		err: errors.New("update OCI Functions application ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid NSG configuration: not authorized"),
+	}
+	recorder := record.NewFakeRecorder(10)
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager, Recorder: recorder}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
 	if err != nil {
@@ -265,9 +319,17 @@ func TestFunctionReconcilerManagedModeRecordsLifecycleErrors(t *testing.T) {
 	if updated.Status.Phase != functionsv1alpha1.FunctionPhaseError {
 		t.Fatalf("phase = %q, want %q", updated.Status.Phase, functionsv1alpha1.FunctionPhaseError)
 	}
-	if !strings.Contains(updated.Status.Message, "oci auth error") {
-		t.Fatalf("message = %q, want lifecycle error", updated.Status.Message)
+	if updated.Status.ApplicationID != manager.state.ApplicationID {
+		t.Fatalf("application ID = %q, want %q", updated.Status.ApplicationID, manager.state.ApplicationID)
 	}
+	if !strings.Contains(updated.Status.Message, "NSG configuration") {
+		t.Fatalf("message = %q, want NSG update context", updated.Status.Message)
+	}
+	condition := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionConditionReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "ManagedFunctionError" {
+		t.Fatalf("Ready condition = %#v, want ManagedFunctionError false", condition)
+	}
+	assertEventContains(t, drainEvents(recorder), "Warning ApplicationNSGUpdateFailed")
 }
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
@@ -290,6 +352,7 @@ func managedFunction(name, namespace string) *functionsv1alpha1.Function {
 				CompartmentID:    "ocid1.compartment.oc1..exampleuniqueid",
 				ApplicationName:  "demo-app",
 				SubnetIDs:        []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+				NSGIDs:           []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"},
 				DisplayName:      "hello",
 				Image:            "me-jeddah-1.ocir.io/example/functions/hello:latest",
 				MemoryInMBs:      256,

@@ -68,9 +68,10 @@ func main() {
 	}
 
 	if err = (&controller.FunctionReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Manager: functionManager,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Manager:  functionManager,
+		Recorder: mgr.GetEventRecorderFor("function-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Function")
 		os.Exit(1)

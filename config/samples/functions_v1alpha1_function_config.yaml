@@ -10,8 +10,13 @@ spec:
     applicationName: oci-functions-operator-demo
     subnetIds:
     - ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid
+    # Optional: attach NSGs to the OCI Functions application.
+    # Omit nsgIds to leave existing application NSGs unmanaged.
+    # Use nsgIds: [] to explicitly clear NSGs.
+    # nsgIds:
+    # - ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid
     displayName: desired-hello
-    image: me-jeddah-1.ocir.io/example/functions/hello:latest
+    image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
     memoryInMBs: 128
     timeoutInSeconds: 30
     config:

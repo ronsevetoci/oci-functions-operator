@@ -3,6 +3,7 @@ set -euo pipefail
 
 MODE="${INVOKER_MODE:-fake}"
 OCI_MODE_AUTH="${OCI_AUTH_MODE:-workload}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "Checking demo prerequisites..."
 
@@ -30,6 +31,7 @@ case "$MODE" in
     else
       echo "INVOKER_MODE=fake"
     fi
+    echo "Fake mode requires no OCI auth, creates no OCI resources, and does not validate OCI Functions image compatibility or network egress."
     ;;
   oci)
     echo "INVOKER_MODE=oci"
@@ -42,7 +44,8 @@ case "$MODE" in
         else
           echo "OCI_AUTH_MODE=workload"
         fi
-        echo "OKE workload identity is expected; no OCI config or PEM Secret is required."
+        echo "OKE Workload Identity is expected; no OCI config file, PEM key, or credential Secret is required."
+        echo "For managed Functions, verify subnet routing and any application NSG egress allow TCP 443 to Oracle Services Network/OCIR."
         ;;
       config)
         echo "OCI_AUTH_MODE=config"
@@ -53,6 +56,7 @@ case "$MODE" in
         fi
         echo "OCI_CONFIG_FILE=$CONFIG_FILE"
         echo "OCI_CONFIG_PROFILE=${OCI_CONFIG_PROFILE:-DEFAULT}"
+        echo "Config auth is for local existing-function demos and local development only."
         ;;
       *)
         echo "error: unsupported OCI_AUTH_MODE=$OCI_MODE_AUTH. Supported values: workload, config" >&2
@@ -65,5 +69,15 @@ case "$MODE" in
     exit 1
     ;;
 esac
+
+MANAGED_SAMPLE="$ROOT_DIR/config/samples/functions_v1alpha1_function_managed.yaml"
+if [[ -f "$MANAGED_SAMPLE" ]]; then
+  if grep -Eq 'image:[[:space:]]*ghcr\.io/' "$MANAGED_SAMPLE"; then
+    echo "warning: managed sample function image points at GHCR. OCI Functions runtime images should use same-region OCIR." >&2
+  fi
+  if grep -Eq 'image:[[:space:]]*me-jeddah-1\.ocir\.io/' "$MANAGED_SAMPLE"; then
+    echo "warning: Jeddah OCIR image references should use jed.ocir.io, not me-jeddah-1.ocir.io." >&2
+  fi
+fi
 
 echo "Demo prerequisites look good."

@@ -13,9 +13,9 @@ This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). OCI mode u
 
 - `kubectl` points at the target OKE cluster.
 - The operator image is reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
-- OKE Workload Identity is enabled/available for the cluster and service account.
+- OKE Workload Identity is enabled/available for the cluster and service account. Use an OKE cluster type/version that supports Workload Identity in your tenancy.
 - OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources and invoke functions.
-- For managed mode: a compartment OCID, subnet OCIDs, and a function image OCI Functions can pull.
+- For managed mode: a compartment OCID, subnet OCIDs, optional NSG OCIDs, and a same-region OCIR function image OCI Functions can pull.
 - For existing mode: an existing function OCID and that function's invoke endpoint.
 
 ## Install CRDs
@@ -68,7 +68,9 @@ The SDK also uses the pod service account token, Kubernetes service account CA, 
 
 Scope policies as tightly as your tenancy model allows. The workload principal conditions should match the namespace, service account, and OKE cluster OCID used by this deployment.
 
-For managed mode, the operator needs to ensure OCI Functions applications/functions and invoke the resolved function:
+For managed mode, the operator needs to ensure OCI Functions applications/functions and invoke the resolved function. You can grant broad `manage functions-family` permissions, or use narrower permissions for `fn-apps`, `fn-functions`, and invocation according to your tenancy policy model.
+
+Example with narrower resource families:
 
 ```text
 Allow any-user to manage fn-apps in compartment <functions-compartment> where all {
@@ -97,9 +99,25 @@ Allow any-user to use virtual-network-family in compartment <network-compartment
 }
 ```
 
-If the function image is in OCIR and the workload needs repository access, add the appropriate repository read policy for your registry compartment/tenancy.
+If the function image is in a private OCIR repository, add the appropriate repository read policy for the Functions application principal in your registry compartment/tenancy. Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but network egress is still required.
 
 For existing-mode invocation only, you may be able to narrow policy to `use fn-functions` for the target compartment instead of `manage`.
+
+## Network For Managed Functions
+
+Managed mode creates or updates an OCI Functions application. OCI Functions pulls the function image from OCIR during invocation, so the application network must allow that pull path:
+
+- The Functions application subnet must have a route to Oracle Services Network/OCIR, usually through a Service Gateway.
+- Subnet security lists must allow the required HTTPS egress.
+- If `spec.config.nsgIds` attaches NSGs to the Functions application, those NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
+
+Missing NSG egress can surface only at invocation time as:
+
+```text
+FunctionInvokeImageNotAvailable: Failed to pull function image
+```
+
+A public OCIR repository or otherwise accessible repository does not avoid the need for network egress from the Functions application.
 
 ## Deploy The Manager With OCI Mode
 
@@ -140,7 +158,8 @@ Create a managed `Function`. This example targets Jeddah with region identifier 
 ```sh
 export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
 export SUBNET_OCID="ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"
-export FUNCTION_IMAGE="me-jeddah-1.ocir.io/<namespace>/functions/hello:latest"
+export NSG_OCID="ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"
+export FUNCTION_IMAGE="jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>"
 
 cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -155,6 +174,10 @@ spec:
     applicationName: oci-functions-operator-demo
     subnetIds:
     - ${SUBNET_OCID}
+    # Optional: uncomment when the Functions application should use NSGs.
+    # The NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
+    # nsgIds:
+    # - ${NSG_OCID}
     displayName: oci-managed-hello
     image: ${FUNCTION_IMAGE}
     memoryInMBs: 128
@@ -229,6 +252,7 @@ Inspect status and events:
 
 ```sh
 kubectl get functions,functionjobs
+kubectl get events --field-selector involvedObject.kind=Function,involvedObject.name=${FUNCTION_RESOURCE_NAME} --sort-by=.lastTimestamp
 kubectl get functionjob oci-hello-job -o yaml
 kubectl describe functionjob oci-hello-job
 kubectl get events --field-selector involvedObject.kind=FunctionJob,involvedObject.name=oci-hello-job --sort-by=.lastTimestamp
@@ -265,8 +289,43 @@ Checks:
 - Confirm `spec.config.region` is a valid OCI region identifier such as `me-jeddah-1`.
 - Confirm `spec.config.compartmentId` is the Functions compartment.
 - Confirm `spec.config.subnetIds` are valid and usable by OCI Functions.
+- If `spec.config.nsgIds` is set, confirm the NSG OCIDs are valid and can be attached to the Functions application.
 - Confirm IAM policy allows managing `fn-apps` and `fn-functions`.
-- Confirm the function image exists and OCI Functions can pull it.
+- Confirm the function image is in same-region OCIR and OCI Functions can pull it.
+
+### Function Image Pull Failures
+
+Symptoms:
+
+- Managed `Function` becomes Ready, but `FunctionJob` invocation fails.
+- OCI returns `FunctionInvokeImageNotAvailable: Failed to pull function image`.
+
+Checks:
+
+- Confirm the function image is an OCI Functions-compatible Fn image.
+- Confirm the image is in the expected same-region registry, such as Jeddah OCIR `jed.ocir.io`.
+- Confirm the Functions application subnet route table sends Oracle Services Network/OCIR traffic through a Service Gateway.
+- Confirm subnet security lists allow HTTPS egress.
+- If the Functions application has NSGs from `spec.config.nsgIds`, confirm those NSGs allow egress TCP 443 to Oracle Services Network/OCIR.
+- Remember that public OCIR repository visibility does not bypass network egress requirements.
+
+### Placeholder Controller Image
+
+Symptoms:
+
+- The manager pod cannot pull `controller:latest`.
+- The deployment stays in `ImagePullBackOff`.
+
+Checks:
+
+- Build and push the operator/controller image to a registry OKE can pull.
+- Set the deployment image:
+
+```sh
+kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
+```
+
+- `controller:latest` in the base manifest is only a local scaffold placeholder.
 
 ### Invoke Endpoint Errors
 

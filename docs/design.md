@@ -69,12 +69,24 @@ When existing mode is used:
 When managed mode is used:
 
 - the controller ensures the OCI Functions application exists.
+- the controller creates the application with requested subnet IDs and NSG IDs.
+- the controller reconciles application NSG IDs when `spec.config.nsgIds` is set.
 - the controller ensures the OCI Function exists.
 - image, memory, timeout, and config are updated when they drift.
 - `status.applicationId`, `status.functionId`, and `status.invokeEndpoint` are populated from OCI responses.
-- `status.phase` remains `Pending` until the function is active and an invoke endpoint is available.
+- `status.phase` remains `Pending` until the application/function metadata is usable and the function is active with an invoke endpoint.
 
-Managed mode config includes region, compartment OCID, application name, subnet OCIDs, image, memory, timeout, and function config. Jeddah is represented with the OCI region identifier `me-jeddah-1`.
+Managed mode config includes region, compartment OCID, application name, subnet OCIDs, optional application NSG OCIDs, image, memory, timeout, and function config. Jeddah is represented with the OCI region identifier `me-jeddah-1`.
+
+`spec.config.nsgIds` has deliberate reconciliation semantics:
+
+- omitted: leave NSGs unmanaged on existing applications.
+- empty list: explicitly clear all NSGs from the application.
+- non-empty list: create new applications with those NSGs and reconcile existing applications to that desired set.
+
+OCI Functions pulls the function runtime image during invocation, not as an operator pod. The Functions application subnet must route to Oracle Services Network/OCIR, and any NSGs attached through `spec.config.nsgIds` must allow egress TCP 443 to Oracle Services Network/OCIR. Missing NSG egress can present as `FunctionInvokeImageNotAvailable: Failed to pull function image`, even when the OCIR repository is public or otherwise accessible.
+
+The function runtime image must be an OCI Functions-compatible Fn image in same-region OCIR. For Jeddah, that means `jed.ocir.io/...`. The operator/controller image is separate and may be hosted in GHCR or another registry OKE can pull.
 
 ## FunctionJob Lifecycle
 
@@ -121,10 +133,14 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 
 ## Known Limitations
 
-- Managed lifecycle currently reconciles application/function create and function update only; deletion and finalizers are not implemented.
+- Managed lifecycle currently reconciles application/function create, application NSG updates, and function update only; deletion and finalizers are not implemented.
 - Existing mode requires the user to provide the invoke endpoint in `spec.invokeEndpoint`.
-- Inline payloads are intended for small demo and operational jobs, not large queues.
+- Inline payloads are intended for small demos and operational jobs, not large queues.
+- Large jobs should eventually use Object Storage, Queue, or Streaming payload sources instead of embedding all payloads in the CR.
 - Retry behavior is local to reconciliation and status, not a durable external work queue.
+- This is not a generic Kubernetes Job compatibility layer.
+- The API intentionally does not expose `PodTemplateSpec`, volumes, sidecars, init containers, GPUs, or privileged execution.
+- Function runtime images must be OCI Functions-compatible and stored in same-region OCIR.
 - There is no admission webhook yet for cross-field validation beyond CRD CEL rules.
 - Function response bodies are captured internally by the invoker response but are not surfaced in `FunctionJob` status.
 - OCI mode currently supports OKE Workload Identity and local OCI config-file auth only.

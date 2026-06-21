@@ -89,6 +89,15 @@ type FunctionConfig struct {
 	// +listType=atomic
 	SubnetIDs []string `json:"subnetIds"`
 
+	// NSGIDs are the Network Security Group OCIDs to attach to the managed OCI Functions application.
+	// When omitted, the operator leaves NSGs unmanaged on existing applications.
+	// Set an empty list to explicitly clear all NSGs from an existing application.
+	// Set a non-empty list to create new applications with those NSGs and reconcile existing applications to that set.
+	// +optional
+	// +kubebuilder:validation:items:Pattern=^ocid1\.networksecuritygroup\..+
+	// +listType=atomic
+	NSGIDs []string `json:"nsgIds,omitempty"`
+
 	// ApplicationOCID is an existing OCI Functions application OCID.
 	// Deprecated: use applicationName and subnetIds for managed application reconciliation.
 	// +optional
@@ -100,7 +109,8 @@ type FunctionConfig struct {
 	// +kubebuilder:validation:MaxLength=255
 	DisplayName string `json:"displayName"`
 
-	// Image is the container image reference for the function.
+	// Image is the OCI Functions-compatible runtime image reference.
+	// Managed functions should use a same-region OCIR image, such as jed.ocir.io/... for me-jeddah-1.
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 

@@ -1,14 +1,15 @@
-FROM fnproject/python:3.11-dev AS build-stage
+FROM fnproject/python:3.12-dev AS build-stage
 
 WORKDIR /function
 ENV PYTHONPATH=/python
 
 COPY requirements.txt /function/
-RUN pip3 install --target /python -r requirements.txt
+RUN pip3 install --target /python --no-cache --no-cache-dir -r requirements.txt && \
+    rm -fr ~/.cache/pip /tmp* /function/requirements.txt
 
-COPY func.py /function/
+COPY func.py func.yaml /function/
 
-FROM fnproject/python:3.11
+FROM fnproject/python:3.12
 
 WORKDIR /function
 COPY --from=build-stage /python /python

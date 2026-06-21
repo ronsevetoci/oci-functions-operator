@@ -11,8 +11,10 @@ import (
 
 	functionsv1alpha1 "github.com/oracle/oci-functions-operator/api/v1alpha1"
 	"github.com/oracle/oci-functions-operator/internal/lifecycle"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -21,13 +23,15 @@ import (
 // FunctionReconciler reconciles a Function object.
 type FunctionReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Manager lifecycle.Manager
+	Scheme   *runtime.Scheme
+	Manager  lifecycle.Manager
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile updates Function status from the requested source of truth.
 func (r *FunctionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -148,7 +152,12 @@ func (r *FunctionReconciler) reconcileManagedFunctionStatus(ctx context.Context,
 	}
 
 	state, err := r.Manager.EnsureFunction(ctx, desiredFunctionFromSpec(function))
+	r.recordLifecycleEvents(function, state.Events)
 	if err != nil {
+		function.Status.ApplicationID = state.ApplicationID
+		function.Status.FunctionOCID = state.FunctionID
+		function.Status.FunctionID = state.FunctionID
+		function.Status.InvokeEndpoint = state.InvokeEndpoint
 		function.Status.Phase = functionsv1alpha1.FunctionPhaseError
 		function.Status.Message = err.Error()
 		function.SetCondition(metav1.Condition{
@@ -220,16 +229,18 @@ func resolvedSpecFunctionID(function *functionsv1alpha1.Function) string {
 func desiredFunctionFromSpec(function *functionsv1alpha1.Function) lifecycle.DesiredFunction {
 	config := function.Spec.Config
 	return lifecycle.DesiredFunction{
-		Region:           strings.TrimSpace(config.Region),
-		CompartmentID:    strings.TrimSpace(config.CompartmentID),
-		ApplicationName:  strings.TrimSpace(config.ApplicationName),
-		SubnetIDs:        append([]string(nil), config.SubnetIDs...),
-		DisplayName:      strings.TrimSpace(config.DisplayName),
-		Image:            strings.TrimSpace(config.Image),
-		MemoryInMBs:      desiredMemoryInMBs(config),
-		TimeoutInSeconds: desiredTimeoutInSeconds(config),
-		Config:           desiredConfigMap(config),
-		FreeformTags:     copyStringMap(config.FreeformTags),
+		Region:                  strings.TrimSpace(config.Region),
+		CompartmentID:           strings.TrimSpace(config.CompartmentID),
+		ApplicationName:         strings.TrimSpace(config.ApplicationName),
+		SubnetIDs:               trimStringSlice(config.SubnetIDs),
+		ApplicationNSGIDs:       trimStringSlice(config.NSGIDs),
+		ManageApplicationNSGIDs: config.NSGIDs != nil,
+		DisplayName:             strings.TrimSpace(config.DisplayName),
+		Image:                   strings.TrimSpace(config.Image),
+		MemoryInMBs:             desiredMemoryInMBs(config),
+		TimeoutInSeconds:        desiredTimeoutInSeconds(config),
+		Config:                  desiredConfigMap(config),
+		FreeformTags:            copyStringMap(config.FreeformTags),
 	}
 }
 
@@ -266,6 +277,30 @@ func copyStringMap(values map[string]string) map[string]string {
 		copied[key] = value
 	}
 	return copied
+}
+
+func trimStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	trimmed := make([]string, len(values))
+	for i := range values {
+		trimmed[i] = strings.TrimSpace(values[i])
+	}
+	return trimmed
+}
+
+func (r *FunctionReconciler) recordLifecycleEvents(function *functionsv1alpha1.Function, events []lifecycle.Event) {
+	if r.Recorder == nil {
+		return
+	}
+	for _, event := range events {
+		eventType := corev1.EventTypeNormal
+		if event.Type == lifecycle.EventTypeWarning {
+			eventType = corev1.EventTypeWarning
+		}
+		r.Recorder.Event(function, eventType, event.Reason, event.Message)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

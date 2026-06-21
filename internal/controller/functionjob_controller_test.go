@@ -178,6 +178,59 @@ func TestFunctionJobReconcilerFailsWhenReferencedFunctionIsNotReady(t *testing.T
 	assertEventContains(t, drainEvents(recorder), "Warning Failed")
 }
 
+func TestFunctionJobReconcilerDoesNotInvokeWhenReadyConditionIsFalse(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyFunction("hello", "default", "ocid1.fnfunc.oc1.iad.exampleuniqueid")
+	function.Spec.Mode = functionsv1alpha1.FunctionModeManaged
+	function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+	function.Status.Message = "update OCI Functions application ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid NSG configuration: not authorized"
+	function.Status.Conditions = []metav1.Condition{{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ManagedFunctionError",
+		Message:            function.Status.Message,
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
+	job := &functionsv1alpha1.FunctionJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "blocked-job", Namespace: "default"},
+		Spec: functionsv1alpha1.FunctionJobSpec{
+			FunctionRef: functionsv1alpha1.FunctionReference{Name: "hello"},
+			Payload:     &apiruntime.RawExtension{Raw: []byte(`{"message":"hello"}`)},
+		},
+	}
+	recorder := record.NewFakeRecorder(10)
+	invoker := &scriptedInvoker{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionJob{}, &functionsv1alpha1.Function{}).
+		WithObjects(function, job).
+		Build()
+	reconciler := &FunctionJobReconciler{Client: client, Scheme: scheme, Invoker: invoker, Recorder: recorder}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "blocked-job", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if len(invoker.requests) != 0 {
+		t.Fatalf("invocation count = %d, want 0 while Function Ready condition is false", len(invoker.requests))
+	}
+
+	var updated functionsv1alpha1.FunctionJob
+	if err := client.Get(ctx, types.NamespacedName{Name: "blocked-job", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated FunctionJob: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionJobPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, functionsv1alpha1.FunctionJobPhaseFailed)
+	}
+	if !strings.Contains(updated.Status.LastError, "Ready=False") || !strings.Contains(updated.Status.LastError, "ManagedFunctionError") {
+		t.Fatalf("lastError = %q, want Ready=false managed error guidance", updated.Status.LastError)
+	}
+	assertEventContains(t, drainEvents(recorder), "Warning Failed")
+}
+
 func TestFunctionJobReconcilerPropagatesOCIRequestID(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)

@@ -12,6 +12,8 @@ configMapGenerator:
   - OCI_RESOURCE_PRINCIPAL_REGION=replace-with-oci-region
 
 patches:
+# OKE path uses Workload Identity. Do not mount OCI config files, PEM keys,
+# or developer credential Secrets in this overlay.
 - path: manager-oci-env-patch.yaml
 
 generatorOptions:

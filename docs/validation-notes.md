@@ -9,6 +9,7 @@ Use this template to record results from a real OCI-mode demo run.
 - Kubernetes context:
 - Kubernetes version:
 - Namespace:
+- Operator/controller image:
 - `INVOKER_MODE`:
 - `OCI_AUTH_MODE`:
 - `OCI_CONFIG_FILE`:
@@ -17,6 +18,7 @@ Use this template to record results from a real OCI-mode demo run.
 - `OCI_RESOURCE_PRINCIPAL_REGION`:
 - OCI region:
 - OCI tenancy/profile notes:
+- Workload Identity policy used:
 
 ## Function Details
 
@@ -26,11 +28,19 @@ Use this template to record results from a real OCI-mode demo run.
 - Application OCID:
 - Spec invoke endpoint, if existing mode:
 - Status invoke endpoint:
-- Function runtime/image:
-- Managed config region/compartment/subnets:
+- Function runtime image:
+- Function compartment:
+- OCIR repo compartment:
+- Managed config region:
+- Managed config subnet IDs:
+- Subnet route table status for Oracle Services Network/OCIR:
+- Managed config NSG IDs:
+- NSG egress rules for Oracle Services Network/OCIR:
+- Application shape:
 - Expected payload shape:
 - Expected response:
 - IAM/policy notes:
+- Functions application route/NSG egress notes for OCIR image pulls:
 
 ## FunctionJob Spec
 
@@ -52,15 +62,19 @@ Use this template to record results from a real OCI-mode demo run.
 - Final phase:
 - `status.succeeded`:
 - `status.failed`:
+- `status.active`:
+- `status.retries`:
 - `status.lastError`:
 - `status.lastOciRequestId`:
 - Per-payload invocation IDs:
 - Per-payload OCI request IDs:
+- Per-payload status summary:
 
 ## Errors
 
 - Did any invocation fail?
 - Error classification observed:
+- Did OCI report `FunctionInvokeImageNotAvailable: Failed to pull function image`?
 - Was the error actionable from `kubectl get` or `kubectl describe`?
 - Was any response body truncated appropriately?
 - Related manager log excerpt:

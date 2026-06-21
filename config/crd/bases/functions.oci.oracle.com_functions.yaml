@@ -100,7 +100,9 @@ spec:
                       resources.
                     type: object
                   image:
-                    description: Image is the container image reference for the function.
+                    description: |-
+                      Image is the OCI Functions-compatible runtime image reference.
+                      Managed functions should use a same-region OCIR image, such as jed.ocir.io/... for me-jeddah-1.
                     minLength: 1
                     type: string
                   memoryInMB:
@@ -126,6 +128,17 @@ spec:
                     - 2048
                     format: int32
                     type: integer
+                  nsgIds:
+                    description: |-
+                      NSGIDs are the Network Security Group OCIDs to attach to the managed OCI Functions application.
+                      When omitted, the operator leaves NSGs unmanaged on existing applications.
+                      Set an empty list to explicitly clear all NSGs from an existing application.
+                      Set a non-empty list to create new applications with those NSGs and reconcile existing applications to that set.
+                    items:
+                      pattern: ^ocid1\.networksecuritygroup\..+
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   region:
                     description: Region is the OCI region identifier, such as me-jeddah-1.
                     minLength: 1

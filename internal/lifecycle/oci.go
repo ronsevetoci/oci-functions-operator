@@ -34,6 +34,7 @@ type functionsManagementClient interface {
 	ListApplications(context.Context, ocifunctions.ListApplicationsRequest) (ocifunctions.ListApplicationsResponse, error)
 	CreateApplication(context.Context, ocifunctions.CreateApplicationRequest) (ocifunctions.CreateApplicationResponse, error)
 	GetApplication(context.Context, ocifunctions.GetApplicationRequest) (ocifunctions.GetApplicationResponse, error)
+	UpdateApplication(context.Context, ocifunctions.UpdateApplicationRequest) (ocifunctions.UpdateApplicationResponse, error)
 	ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error)
 	CreateFunction(context.Context, ocifunctions.CreateFunctionRequest) (ocifunctions.CreateFunctionResponse, error)
 	GetFunction(context.Context, ocifunctions.GetFunctionRequest) (ocifunctions.GetFunctionResponse, error)
@@ -106,12 +107,12 @@ func (o *OCI) EnsureFunction(ctx context.Context, desired DesiredFunction) (Func
 
 	o.client.SetRegion(desired.Region)
 
-	application, err := o.ensureApplication(ctx, desired)
+	application, events, err := o.ensureApplication(ctx, desired)
 	if err != nil {
-		return FunctionState{}, err
+		return FunctionState{ApplicationID: stringValue(application.Id), Events: events}, err
 	}
 
-	state := FunctionState{ApplicationID: stringValue(application.Id)}
+	state := FunctionState{ApplicationID: stringValue(application.Id), Events: events}
 	if application.LifecycleState != "" && application.LifecycleState != ocifunctions.ApplicationLifecycleStateActive {
 		state.Message = fmt.Sprintf("OCI application %q is %s.", desired.ApplicationName, application.LifecycleState)
 		return state, nil
@@ -138,14 +139,14 @@ func (o *OCI) EnsureFunction(ctx context.Context, desired DesiredFunction) (Func
 	return state, nil
 }
 
-func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (ocifunctions.Application, error) {
+func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (ocifunctions.Application, []Event, error) {
 	response, err := o.client.ListApplications(ctx, ocifunctions.ListApplicationsRequest{
 		CompartmentId: common.String(desired.CompartmentID),
 		DisplayName:   common.String(desired.ApplicationName),
 		Limit:         common.Int(50),
 	})
 	if err != nil {
-		return ocifunctions.Application{}, fmt.Errorf("list OCI Functions applications: %w", err)
+		return ocifunctions.Application{}, nil, fmt.Errorf("list OCI Functions applications: %w", err)
 	}
 	for _, item := range response.Items {
 		if stringValue(item.DisplayName) != desired.ApplicationName {
@@ -154,21 +155,35 @@ func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (o
 		if item.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleted || item.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleting {
 			continue
 		}
-		return o.getApplication(ctx, stringValue(item.Id))
+		application, err := o.getApplication(ctx, stringValue(item.Id))
+		if err != nil {
+			return ocifunctions.Application{}, nil, err
+		}
+		return o.ensureApplicationNSGs(ctx, desired, application)
 	}
 
 	created, err := o.client.CreateApplication(ctx, ocifunctions.CreateApplicationRequest{
 		CreateApplicationDetails: ocifunctions.CreateApplicationDetails{
-			CompartmentId: common.String(desired.CompartmentID),
-			DisplayName:   common.String(desired.ApplicationName),
-			SubnetIds:     append([]string(nil), desired.SubnetIDs...),
-			FreeformTags:  copyStringMap(desired.FreeformTags),
+			CompartmentId:           common.String(desired.CompartmentID),
+			DisplayName:             common.String(desired.ApplicationName),
+			SubnetIds:               copyStringSlice(desired.SubnetIDs),
+			NetworkSecurityGroupIds: copyStringSlice(desired.ApplicationNSGIDs),
+			FreeformTags:            copyStringMap(desired.FreeformTags),
 		},
 	})
 	if err != nil {
-		return ocifunctions.Application{}, fmt.Errorf("create OCI Functions application %q: %w", desired.ApplicationName, err)
+		return ocifunctions.Application{}, nil, fmt.Errorf("create OCI Functions application %q: %w", desired.ApplicationName, err)
 	}
-	return created.Application, nil
+
+	events := []Event{}
+	if len(desired.ApplicationNSGIDs) > 0 {
+		events = append(events, Event{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationCreatedWithNSGs",
+			Message: fmt.Sprintf("Created OCI Functions application %q with NSGs %s.", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs)),
+		})
+	}
+	return created.Application, events, nil
 }
 
 func (o *OCI) getApplication(ctx context.Context, applicationID string) (ocifunctions.Application, error) {
@@ -180,6 +195,38 @@ func (o *OCI) getApplication(ctx context.Context, applicationID string) (ocifunc
 		return ocifunctions.Application{}, fmt.Errorf("get OCI Functions application %s: %w", applicationID, err)
 	}
 	return response.Application, nil
+}
+
+func (o *OCI) ensureApplicationNSGs(ctx context.Context, desired DesiredFunction, application ocifunctions.Application) (ocifunctions.Application, []Event, error) {
+	if !desired.ManageApplicationNSGIDs {
+		return application, nil, nil
+	}
+	if sameStringSet(application.NetworkSecurityGroupIds, desired.ApplicationNSGIDs) {
+		return application, nil, nil
+	}
+
+	applicationID := stringValue(application.Id)
+	updated, err := o.client.UpdateApplication(ctx, ocifunctions.UpdateApplicationRequest{
+		ApplicationId: common.String(applicationID),
+		UpdateApplicationDetails: ocifunctions.UpdateApplicationDetails{
+			NetworkSecurityGroupIds: copyStringSlice(desired.ApplicationNSGIDs),
+		},
+	})
+	if err != nil {
+		event := Event{
+			Type:    EventTypeWarning,
+			Reason:  "ApplicationNSGUpdateFailed",
+			Message: fmt.Sprintf("Failed to update OCI Functions application %q NSG configuration to %s: %v", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs), err),
+		}
+		return application, []Event{event}, fmt.Errorf("update OCI Functions application %s NSG configuration: %w", applicationID, err)
+	}
+
+	event := Event{
+		Type:    EventTypeNormal,
+		Reason:  "ApplicationNSGsUpdated",
+		Message: fmt.Sprintf("Updated OCI Functions application %q NSG configuration to %s.", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs)),
+	}
+	return updated.Application, []Event{event}, nil
 }
 
 func (o *OCI) ensureFunction(ctx context.Context, desired DesiredFunction, applicationID string) (ocifunctions.Function, error) {
@@ -272,6 +319,8 @@ func validateDesiredFunction(desired DesiredFunction) error {
 		return fmt.Errorf("managed Function requires spec.config.applicationName")
 	case len(desired.SubnetIDs) == 0:
 		return fmt.Errorf("managed Function requires spec.config.subnetIds")
+	case desired.ManageApplicationNSGIDs && hasEmptyString(desired.ApplicationNSGIDs):
+		return fmt.Errorf("managed Function requires spec.config.nsgIds entries to be non-empty")
 	case strings.TrimSpace(desired.DisplayName) == "":
 		return fmt.Errorf("managed Function requires spec.config.displayName")
 	case strings.TrimSpace(desired.Image) == "":
@@ -282,6 +331,15 @@ func validateDesiredFunction(desired DesiredFunction) error {
 		return fmt.Errorf("managed Function requires spec.config.timeoutInSeconds")
 	}
 	return nil
+}
+
+func hasEmptyString(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func configProviderForAuthMode(options OCIOptions) (common.ConfigurationProvider, error) {
@@ -373,9 +431,40 @@ func copyStringMap(values map[string]string) map[string]string {
 	return copied
 }
 
+func copyStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
 func nilToEmptyMap(values map[string]string) map[string]string {
 	if values == nil {
 		return map[string]string{}
 	}
 	return values
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, value := range a {
+		seen[value]++
+	}
+	for _, value := range b {
+		if seen[value] == 0 {
+			return false
+		}
+		seen[value]--
+	}
+	return true
+}
+
+func formatStringList(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	return "[" + strings.Join(values, ", ") + "]"
 }

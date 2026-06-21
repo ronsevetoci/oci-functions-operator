@@ -1,6 +1,6 @@
 # Managed Function Demo
 
-This walkthrough uses `mode: Managed`, so the operator creates or updates the OCI Functions application/function and discovers the invoke endpoint into `Function.status.invokeEndpoint`.
+This is the primary OKE demo. It uses `mode: Managed`, so the operator creates or updates the OCI Functions application/function and discovers the invoke endpoint into `Function.status.invokeEndpoint`.
 
 OKE deployments should run the manager with Workload Identity:
 
@@ -13,57 +13,113 @@ There is no global `OCI_FUNCTIONS_INVOKE_ENDPOINT` in managed mode.
 
 ## Prerequisites
 
-- The CRDs are installed with `kubectl apply -k config/crd`.
-- The manager is running in OCI mode on OKE with `OCI_AUTH_MODE=workload`.
-- The manager service account has IAM permissions to manage OCI Functions applications/functions and invoke functions in the target compartment.
-- You have a Jeddah subnet OCID that OCI Functions can use.
-- You have an OCI Functions-compatible container image reachable from OCI Functions.
+- `kubectl` points at the target OKE cluster.
+- The CRDs are installed or can be installed with `kubectl apply -k config/crd`.
+- The manager service account has IAM permissions to manage OCI Functions applications/functions, use the target network resources, and invoke functions in the target compartment.
+- You have a Jeddah compartment OCID and subnet OCID for OCI Functions.
+- If the Functions application uses Network Security Groups, you have an NSG OCID whose egress rules allow TCP 443 to Oracle Services Network/OCIR.
+- You can push an operator image to a registry OKE can pull.
+- You can push a function runtime image to Jeddah OCIR.
 
-The operator controller image and the function runtime image are different images:
+The operator controller image and function runtime image are different:
 
-- The operator image runs the Kubernetes controller manager.
-- The function image is the container OCI Functions runs for `managed-hello`.
+- Operator/controller image: runs the Kubernetes controller manager in OKE. It can be in GHCR, OCIR, or any registry OKE can pull.
+- Function runtime image: runs in OCI Functions. It must be an OCI Functions-compatible Fn image in same-region OCIR, such as `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>` for Jeddah.
 
-The function image must be built for OCI Functions and stored where OCI Functions can pull it, such as GHCR or OCIR with the right repository access.
+OCI Functions pulls the function image from OCIR during invocation. The Functions application subnet must route to Oracle Services Network/OCIR, usually through a Service Gateway. If an NSG is attached to the Functions application, that NSG must also allow egress TCP 443 to Oracle Services Network/OCIR. A public OCIR repository does not remove the need for this network egress.
 
-## 1. Build And Push The Sample Function Image
+## 1. Build And Push The Operator Image
+
+If you are testing local code changes, build and push the operator/controller image first:
+
+```sh
+export OPERATOR_IMAGE="ghcr.io/<OWNER>/oci-functions-operator/controller:<tag>"
+
+docker build -t "$OPERATOR_IMAGE" .
+docker push "$OPERATOR_IMAGE"
+```
+
+Any registry OKE can pull is acceptable for the operator image.
+
+## 2. Build And Push The Function Runtime Image
 
 This repo includes a minimal Python FDK function under `examples/hello-function`.
+Prefer the Fn CLI build path so the output image matches the Fn Project layout.
 
-Build it with Podman for `linux/amd64`, which is the platform expected by OCI Functions:
-
-```sh
-podman build --platform linux/amd64 -t ghcr.io/ronsevet/oci-functions-operator/hello-function:dev examples/hello-function
-```
-
-Push it to GHCR:
-
-```sh
-podman push ghcr.io/ronsevet/oci-functions-operator/hello-function:dev
-```
-
-Use this pushed image as `<FUNCTION_IMAGE>` in the managed Function sample:
+The function image must be pushed to Jeddah OCIR for this Jeddah demo:
 
 ```text
-ghcr.io/ronsevet/oci-functions-operator/hello-function:dev
+jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
 ```
 
-## 2. Edit The Managed Function Sample
+Log in to OCIR with the container engine used by Fn CLI:
 
-Open `config/samples/functions_v1alpha1_function_managed.yaml` and replace:
+```sh
+docker login jed.ocir.io
+# or:
+podman login jed.ocir.io
+```
 
-- `<COMPARTMENT_OCID>` with the compartment OCID where the application/function should be managed.
-- `<SUBNET_OCID>` with a subnet OCID in Jeddah that OCI Functions can use.
-- `<FUNCTION_IMAGE>` with the full function image reference, such as `ghcr.io/ronsevet/oci-functions-operator/hello-function:dev`.
+Build and push with Fn CLI:
 
-The sample uses:
+```sh
+cd examples/hello-function
+fn build
+fn push --registry jed.ocir.io/<TENANCY_NAMESPACE>
+```
 
-- region: `me-jeddah-1`
-- application name: `oke-functions-operator-demo`
-- Function resource name: `managed-hello`
-- OCI function display name: `managed-hello`
+With the default `func.yaml` version, use this pushed image as `<FUNCTION_IMAGE>`:
 
-Current sample shape:
+```text
+jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:0.0.1
+```
+
+Manual Podman builds are acceptable only when the Dockerfile keeps the Fn Python FDK layout and entrypoint:
+
+```sh
+export TENANCY_NAMESPACE="<TENANCY_NAMESPACE>"
+export TAG="0.0.1"
+
+podman build --platform linux/amd64 --format docker \
+  -t "jed.ocir.io/${TENANCY_NAMESPACE}/hello-function:${TAG}" \
+  examples/hello-function
+podman push "jed.ocir.io/${TENANCY_NAMESPACE}/hello-function:${TAG}"
+```
+
+Use `linux/amd64` for a `GENERIC_X86` OCI Functions application. If you choose an ARM application shape, build an ARM64-compatible image instead.
+
+## 3. Install CRDs And Deploy The Operator
+
+```sh
+make manifests
+kubectl apply -k config/crd
+```
+
+Deploy the manager in OCI mode:
+
+```sh
+export OPERATOR_IMAGE="${OPERATOR_IMAGE:-ghcr.io/ronsevetoci/oci-functions-operator/controller:dev}"
+export OCI_RESOURCE_PRINCIPAL_REGION="me-jeddah-1"
+
+kubectl apply -k config/overlays/oci-mode
+
+kubectl -n oci-functions-operator-system create configmap oci-functions-operator-oci-mode \
+  --from-literal=INVOKER_MODE=oci \
+  --from-literal=OCI_AUTH_MODE=workload \
+  --from-literal=OCI_RESOURCE_PRINCIPAL_VERSION=2.2 \
+  --from-literal=OCI_RESOURCE_PRINCIPAL_REGION="$OCI_RESOURCE_PRINCIPAL_REGION" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
+kubectl -n oci-functions-operator-system rollout restart deployment/oci-functions-operator-controller-manager
+kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
+```
+
+OKE Workload Identity does not require a local OCI config file, PEM Secret, or mounted developer credentials.
+
+## 4. Apply A Managed Function
+
+Create a managed `Function` in Jeddah:
 
 ```yaml
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -79,57 +135,85 @@ spec:
     applicationName: oke-functions-operator-demo
     subnetIds:
     - <SUBNET_OCID>
+    # Optional. Omit nsgIds to leave existing application NSGs unmanaged.
+    # Use nsgIds: [] to explicitly clear NSGs.
+    # Any attached NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
+    # nsgIds:
+    # - <NSG_OCID>
     displayName: managed-hello
-    image: <FUNCTION_IMAGE>
+    image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
     memoryInMBs: 256
     timeoutInSeconds: 120
     config:
       GREETING: "hello from oke functions operator"
 ```
 
-## 3. Apply And Watch The Function
+Or edit and apply the sample:
 
 ```sh
 kubectl apply -f config/samples/functions_v1alpha1_function_managed.yaml
 kubectl get functions -w
 ```
 
-In another terminal, describe the Function:
+In another terminal:
 
 ```sh
 kubectl describe function managed-hello
+kubectl get events --field-selector involvedObject.kind=Function,involvedObject.name=managed-hello --sort-by=.lastTimestamp
 ```
 
-Wait for `Ready=True`. Managed mode should populate:
+Expected success indicators:
 
-- `status.applicationId`
-- `status.functionId`
-- `status.invokeEndpoint`
+- `Function` shows `Ready=True`.
+- `status.applicationId` is populated.
+- `status.functionId` is populated.
+- `status.invokeEndpoint` is populated.
+- `status.phase=Ready`.
 
-## 4. Submit A FunctionJob
+## 5. Submit A FunctionJob
 
-The sample FunctionJob references `managed-hello`:
+The managed sample job references `managed-hello`:
+
+```yaml
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionJob
+metadata:
+  name: managed-hello-job
+  namespace: default
+spec:
+  functionRef:
+    name: managed-hello
+  payloads:
+  - name: Ron
+    index: 0
+  - name: Ron
+    index: 1
+  parallelism: 1
+  retryLimit: 1
+```
+
+Apply and watch:
 
 ```sh
 kubectl apply -f config/samples/functions_v1alpha1_functionjob_managed.yaml
 kubectl get functionjobs -w
 ```
 
-Describe the job:
+Inspect status and events:
 
 ```sh
 kubectl describe functionjob managed-hello-job
+kubectl get functionjob managed-hello-job -o yaml
+kubectl get events --field-selector involvedObject.kind=FunctionJob,involvedObject.name=managed-hello-job --sort-by=.lastTimestamp
 ```
 
-The FunctionJob sample sends two JSON object payloads:
+Expected success indicators:
 
-```yaml
-payloads:
-- name: Ron
-  index: 0
-- name: Ron
-  index: 1
-```
+- `FunctionJob.status.phase=Succeeded`.
+- `Complete=True`.
+- `status.succeeded` equals the payload count.
+- per-payload `invocationStatuses[*].phase=Succeeded`.
+- per-payload `invocationId` and/or `ociRequestId` are populated after OCI invocation.
 
 ## Troubleshooting
 
@@ -138,7 +222,7 @@ payloads:
 Symptoms:
 
 - Manager logs mention Workload Identity, resource principal, `401`, or `403`.
-- `Function.status.phase` becomes `Error`.
+- `Function.status.phase=Error`.
 - `FunctionJob.status.lastError` contains an OCI auth error.
 
 Checks:
@@ -146,7 +230,7 @@ Checks:
 - Confirm the manager pod has `INVOKER_MODE=oci` and `OCI_AUTH_MODE=workload`.
 - Confirm `OCI_RESOURCE_PRINCIPAL_VERSION=2.2` and `OCI_RESOURCE_PRINCIPAL_REGION=me-jeddah-1`.
 - Confirm IAM policy matches the OKE cluster OCID, namespace, and service account.
-- Confirm the workload can manage `fn-apps` and `fn-functions` in the target compartment.
+- Confirm the workload can manage Functions applications/functions and use the target network resources.
 
 ### Wrong Compartment
 
@@ -157,56 +241,63 @@ Symptoms:
 
 Checks:
 
-- Replace `<COMPARTMENT_OCID>` with the real compartment OCID.
+- Replace `<COMPARTMENT_OCID>` with the real Functions compartment OCID.
 - Confirm the compartment is in the tenancy used by Workload Identity.
 - Confirm IAM policy is scoped to that compartment or an ancestor compartment.
 
-### Wrong Subnet
+### Wrong Subnet Or NSG
 
 Symptoms:
 
-- Application creation fails.
-- Status or manager logs mention subnet, VCN, network, or authorization errors.
+- Application creation/update fails.
+- Status or manager logs mention subnet, VCN, NSG, network, or authorization errors.
 
 Checks:
 
 - Replace `<SUBNET_OCID>` with a subnet in `me-jeddah-1`.
 - Confirm OCI Functions is allowed to use the subnet.
-- Confirm IAM policy allows network use if the subnet is in a different compartment.
+- If `spec.config.nsgIds` is set, confirm each NSG OCID is valid and can be attached to the Functions application.
+- Confirm IAM policy allows network use if the subnet or NSG is in a different compartment.
 
 ### Image Pull Or Access Failure
 
 Symptoms:
 
-- The Function is created but does not become usable.
-- OCI reports image or repository access errors.
+- The `Function` becomes Ready, but invocation fails.
+- OCI reports `FunctionInvokeImageNotAvailable`.
+- Error text includes `FunctionInvokeImageNotAvailable: Failed to pull function image`.
 
 Checks:
 
-- Replace `<FUNCTION_IMAGE>` with a valid OCI Functions-compatible image.
-- Confirm the image region and repository are reachable from OCI Functions.
-- Confirm repository policies allow OCI Functions to pull the image.
-- If you use GHCR, confirm the image/package visibility and credentials model are compatible with OCI Functions.
+- Confirm the function image is in same-region OCIR. For Jeddah use `jed.ocir.io/...`, not GHCR and not `me-jeddah-1.ocir.io`.
+- Confirm the image path and tag exist.
+- Confirm the image is an OCI Functions-compatible Fn image, not a generic application container.
+- Confirm the image architecture matches the OCI Functions application shape, such as `linux/amd64` for `GENERIC_X86`.
+- For private OCIR repositories, add repository read permission for the Functions application principal as required by your tenancy policy model.
+- Public OCIR repository visibility can avoid normal repo-read IAM for public pulls, but it does not solve network egress.
+- Confirm the Functions application subnet has a route to Oracle Services Network/OCIR, such as a Service Gateway route.
+- If `spec.config.nsgIds` is set, confirm each attached NSG allows egress TCP 443 to Oracle Services Network/OCIR.
 
-### Invoke Endpoint Not Discovered
+### Stale CRDs
 
 Symptoms:
 
-- `Function.status.functionId` is set, but `status.invokeEndpoint` is empty.
-- `Function.status.phase` remains `Pending`.
+- `kubectl apply` reports unknown fields such as `status.functionId` or rejects current `spec.config` fields.
 
 Checks:
 
-- Describe the Function and read the Ready condition message.
-- Confirm the OCI Function lifecycle state is active.
-- Confirm the application/function were created in `me-jeddah-1`.
-- Reconcile again after OCI finishes provisioning the function metadata.
+- Regenerate and apply CRDs:
+
+```sh
+make manifests
+kubectl apply -k config/crd
+```
 
 ### Function Not Ready So FunctionJob Refuses To Run
 
 Symptoms:
 
-- `FunctionJob.status.phase` is `Failed`.
+- `FunctionJob.status.phase=Failed`.
 - The job status says the referenced Function is not Ready.
 - No payload invocation occurs.
 
@@ -214,5 +305,5 @@ Checks:
 
 - Run `kubectl describe function managed-hello`.
 - Confirm `Ready=True`.
-- Confirm `status.functionId` and `status.invokeEndpoint` are populated.
-- Recreate the FunctionJob after the Function is Ready.
+- Confirm `status.applicationId`, `status.functionId`, and `status.invokeEndpoint` are populated.
+- Recreate the `FunctionJob` after the `Function` is Ready.

@@ -47,6 +47,11 @@ func (in *FunctionConfig) DeepCopyInto(out *FunctionConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.NSGIDs != nil {
+		in, out := &in.NSGIDs, &out.NSGIDs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Config != nil {
 		in, out := &in.Config, &out.Config
 		*out = make(map[string]string, len(*in))

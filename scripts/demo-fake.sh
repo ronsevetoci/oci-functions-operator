@@ -37,6 +37,7 @@ guard_demo_resource function "$FUNCTION_NAME"
 guard_demo_resource functionjob "$JOB_NAME"
 
 echo "Applying fake-mode sample resources in namespace $NAMESPACE..."
+echo "Fake mode does not contact OCI, create OCI resources, or validate function runtime images."
 kubectl apply -n "$NAMESPACE" -f "$ROOT_DIR/config/samples/functions_v1alpha1_function_existing.yaml"
 kubectl apply -n "$NAMESPACE" -f "$ROOT_DIR/config/samples/functions_v1alpha1_functionjob.yaml"
 
