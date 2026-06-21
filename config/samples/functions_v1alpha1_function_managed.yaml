@@ -1,0 +1,19 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: Function
+metadata:
+  name: managed-hello
+  namespace: default
+spec:
+  mode: Managed
+  config:
+    region: me-jeddah-1
+    compartmentId: <COMPARTMENT_OCID>
+    applicationName: oke-functions-operator-demo
+    subnetIds:
+    - <SUBNET_OCID>
+    displayName: managed-hello
+    image: <FUNCTION_IMAGE>
+    memoryInMBs: 256
+    timeoutInSeconds: 120
+    config:
+      GREETING: "hello from oke functions operator"
