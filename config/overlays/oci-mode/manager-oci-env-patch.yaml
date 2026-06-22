@@ -9,10 +9,7 @@ spec:
       - name: manager
         env:
         - name: INVOKER_MODE
-          valueFrom:
-            configMapKeyRef:
-              name: oci-functions-operator-oci-mode
-              key: INVOKER_MODE
+          value: oci
         - name: OCI_AUTH_MODE
           valueFrom:
             configMapKeyRef:

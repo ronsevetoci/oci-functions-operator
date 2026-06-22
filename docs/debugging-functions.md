@@ -26,6 +26,33 @@ kubectl apply -k config/crd
 
 An error around a current field such as `status.functionId` usually means the cluster still has an older CRD schema.
 
+## Stale RBAC
+
+If the manager logs a reflector error such as:
+
+```text
+failed to list *v1alpha1.FunctionWorkflowRun: functionworkflowruns.functions.oci.oracle.com is forbidden
+```
+
+the controller image is newer than the applied ClusterRole. Reapply the same overlay used for the deployment so prefixed RBAC resources are updated:
+
+```sh
+kubectl apply -k config/overlays/oci-mode
+```
+
+For fake-mode deployments:
+
+```sh
+kubectl apply -k config/default
+```
+
+Confirm the live service account has the workflow permissions:
+
+```sh
+kubectl auth can-i list functionworkflowruns.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+```
+
 ## Function Runtime Images
 
 The function runtime image is separate from the operator image. It must be:

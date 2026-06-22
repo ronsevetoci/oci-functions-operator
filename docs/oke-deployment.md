@@ -367,13 +367,42 @@ Symptoms:
 - Manager logs include `forbidden`.
 - `Function` or `FunctionJob` status does not update.
 - Events are missing.
+- After adding workflows, manager logs include an error like:
+
+```text
+failed to list *v1alpha1.FunctionWorkflowRun: functionworkflowruns.functions.oci.oracle.com is forbidden:
+User "system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager"
+cannot list resource "functionworkflowruns" in API group "functions.oci.oracle.com" at the cluster scope
+```
 
 Checks:
 
-- Reapply RBAC: `kubectl apply -k config/rbac`.
+- Reapply the full deployed overlay so generated CRDs, RBAC, and prefixed resource names stay aligned:
+
+```sh
+kubectl apply -k config/overlays/oci-mode
+```
+
+For fake-mode deployments, use:
+
+```sh
+kubectl apply -k config/default
+```
+
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
-- Confirm generated `ClusterRole` includes `functions/status`, `functionjobs/status`, and core `events`.
-- Reapply the full default or OCI overlay if RBAC drifted.
+- Confirm the live service account can list workflow runs:
+
+```sh
+kubectl auth can-i list functionworkflowruns.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+```
+
+- Confirm the generated `ClusterRole` includes `functionworkflowruns`, `functionworkflowruns/status`, `functionworkflows`, `functions/status`, `functionjobs/status`, and core `events`.
+- Restart the manager after RBAC is updated if the reflector keeps logging stale errors:
+
+```sh
+kubectl -n oci-functions-operator-system rollout restart deployment/oci-functions-operator-controller-manager
+```
 
 ## Local Config Auth
 
