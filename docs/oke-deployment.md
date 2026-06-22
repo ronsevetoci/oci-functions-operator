@@ -1,12 +1,12 @@
 # Deploy The OCI Functions Operator On OKE
 
-This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
+This guide deploys the OCI Functions Operator to Oracle Kubernetes Engine (OKE). OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
 
 ## What Gets Installed
 
-- CRDs for `Function` and `FunctionJob`.
+- CRDs for `Function`, `FunctionJob`, `FunctionWorkflow`, and `FunctionWorkflowRun`.
 - A controller manager Deployment in `oci-functions-operator-system`.
-- RBAC for watching `Function` and `FunctionJob` resources and writing status/events.
+- RBAC for watching the operator CRDs, writing status, and emitting events.
 - OCI mode configured for OKE Workload Identity.
 
 ## Prerequisites
@@ -25,7 +25,7 @@ From the repository root:
 ```sh
 make manifests
 kubectl apply -k config/crd
-kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com
+kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functionworkflows.functions.oci.oracle.com functionworkflowruns.functions.oci.oracle.com
 ```
 
 ## Deploy The Manager With Fake Mode

@@ -1,0 +1,36 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionWorkflow
+metadata:
+  name: hello-workflow
+  labels:
+    demo: oci-functions-operator-fake
+spec:
+  nodes:
+  - name: prepare
+    functionRef:
+      name: existing-hello
+    payload:
+      step: prepare
+      message: prepare workflow input
+    parallelism: 1
+    retryLimit: 0
+  - name: process
+    functionRef:
+      name: existing-hello
+    dependsOn:
+    - prepare
+    payload:
+      step: process
+      message: process prepared input
+    parallelism: 1
+    retryLimit: 1
+  - name: notify
+    functionRef:
+      name: existing-hello
+    dependsOn:
+    - process
+    payload:
+      step: notify
+      message: workflow complete
+    parallelism: 1
+    retryLimit: 0

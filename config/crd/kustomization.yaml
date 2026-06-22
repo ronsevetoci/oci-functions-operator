@@ -1,3 +1,5 @@
 resources:
 - bases/functions.oci.oracle.com_functions.yaml
 - bases/functions.oci.oracle.com_functionjobs.yaml
+- bases/functions.oci.oracle.com_functionworkflows.yaml
+- bases/functions.oci.oracle.com_functionworkflowruns.yaml

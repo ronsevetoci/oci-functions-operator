@@ -3,3 +3,5 @@ resources:
 # placeholders and should be applied directly after editing.
 - functions_v1alpha1_function_existing.yaml
 - functions_v1alpha1_functionjob.yaml
+- functions_v1alpha1_functionworkflow.yaml
+- functions_v1alpha1_functionworkflowrun.yaml

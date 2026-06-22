@@ -15,16 +15,19 @@ rules:
   - functions.oci.oracle.com
   resources:
   - functionjobs
-  - functions
   verbs:
+  - create
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - functions.oci.oracle.com
   resources:
   - functionjobs/finalizers
   - functions/finalizers
+  - functionworkflowruns/finalizers
   verbs:
   - update
 - apiGroups:
@@ -32,7 +35,18 @@ rules:
   resources:
   - functionjobs/status
   - functions/status
+  - functionworkflowruns/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - functions.oci.oracle.com
+  resources:
+  - functions
+  - functionworkflowruns
+  - functionworkflows
+  verbs:
+  - get
+  - list
+  - watch

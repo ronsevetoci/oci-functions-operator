@@ -14,10 +14,15 @@ This is intentionally not modeled as Pods or Kubernetes Jobs. OCI Functions are 
 
 ## MVP Scope
 
-The MVP introduces two namespaced resources in `functions.oci.oracle.com/v1alpha1`:
+The MVP introduced two namespaced resources in `functions.oci.oracle.com/v1alpha1`:
 
 - `Function`: either references an existing OCI Function by `spec.functionId` and `spec.invokeEndpoint`, or manages an OCI Functions application/function from desired config.
 - `FunctionJob`: references a `Function`, carries inline JSON payloads, controls per-reconcile parallelism, applies retry limits, and records status aggregation.
+
+The v2 workflow foundation adds two more namespaced resources:
+
+- `FunctionWorkflow`: a reusable static DAG template made of named function nodes.
+- `FunctionWorkflowRun`: one execution of a workflow, implemented by creating owned child `FunctionJob` resources for eligible nodes.
 
 Implemented invoker modes:
 
@@ -36,10 +41,11 @@ Implemented invoker modes:
 
 ## Architecture
 
-The controller manager runs two reconcilers:
+The controller manager runs three reconcilers:
 
 - `FunctionReconciler` resolves a `Function` into a ready, pending, or error status. Existing function references validate required fields; managed functions ensure an OCI Functions application and function.
 - `FunctionJobReconciler` resolves the referenced `Function`, initializes per-payload status, invokes runnable payloads through `invoker.Interface`, aggregates status, and emits events.
+- `FunctionWorkflowRunReconciler` validates a referenced `FunctionWorkflow`, creates deterministic child `FunctionJob` resources for DAG nodes whose dependencies succeeded, and aggregates node status into the workflow run.
 
 OCI SDK usage is isolated under `internal/invoker` and `internal/lifecycle`. Controllers depend only on small internal interfaces:
 
@@ -118,6 +124,27 @@ When one or more payloads exhaust retries:
 - `status.lastError` and the per-payload error carry the most useful bounded failure details.
 - warning events are emitted.
 
+## FunctionWorkflowRun Lifecycle
+
+A `FunctionWorkflowRun` references a `FunctionWorkflow` in the same namespace. The run controller validates that the workflow has nodes, node names are unique, dependencies reference existing nodes, and the graph has no simple dependency cycle.
+
+For each eligible node:
+
+- dependencies must have completed successfully.
+- the controller creates one owned child `FunctionJob`.
+- the node payload becomes the child job's single `spec.payload`.
+- node `parallelism` and `retryLimit` pass through to the child job.
+
+The run controller watches child `FunctionJob` resources and maps their phases into node status:
+
+- child `Succeeded` means the node is `Complete`.
+- child `Failed` means the node is `Failed`.
+- dependents of failed or skipped nodes are marked `Skipped`.
+- the run becomes `Complete` only when all nodes complete.
+- the run becomes `Failed` if any node fails or is skipped because a dependency did not complete.
+
+This workflow layer intentionally does not implement triggers, schedules, expressions, foreach, output passing, or external event sources yet. A future `FunctionTrigger` resource is planned for OCI Events, Queue, Object Storage, Kubernetes Events, and Kubernetes resource watches.
+
 ## Fake Mode Vs OCI Mode
 
 `INVOKER_MODE=fake` is the default. It returns deterministic successful responses and is intended for local demos, controller development, and CI-friendly tests. It does not contact OCI.
@@ -137,6 +164,7 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 - Existing mode requires the user to provide the invoke endpoint in `spec.invokeEndpoint`.
 - Inline payloads are intended for small demos and operational jobs, not large queues.
 - Large jobs should eventually use Object Storage, Queue, or Streaming payload sources instead of embedding all payloads in the CR.
+- Workflows are static DAGs only; there is no `FunctionTrigger`, schedule, expression language, foreach, or output passing yet.
 - Retry behavior is local to reconciliation and status, not a durable external work queue.
 - This is not a generic Kubernetes Job compatibility layer.
 - The API intentionally does not expose `PodTemplateSpec`, volumes, sidecars, init containers, GPUs, or privileged execution.

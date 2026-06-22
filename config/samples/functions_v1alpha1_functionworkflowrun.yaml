@@ -1,0 +1,9 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionWorkflowRun
+metadata:
+  name: hello-workflow-run
+  labels:
+    demo: oci-functions-operator-fake
+spec:
+  workflowRef:
+    name: hello-workflow

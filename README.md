@@ -2,10 +2,12 @@
 
 Kubernetes-native management and job-style invocation of OCI Functions from OKE.
 
-The operator adds two namespaced CRDs:
+The operator adds four namespaced CRDs:
 
 - `Function`: references an existing OCI Function or manages an OCI Functions application/function.
 - `FunctionJob`: invokes a referenced `Function`, fans out inline JSON payloads, retries failed invocations, and records aggregate/per-payload status.
+- `FunctionWorkflow`: defines a reusable DAG of named function nodes.
+- `FunctionWorkflowRun`: executes one `FunctionWorkflow` by creating child `FunctionJob` resources.
 
 ## Two Images
 
@@ -19,6 +21,7 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 ## Start Here
 
 - [Managed Function demo](docs/managed-function-demo.md): primary OKE walkthrough for managed application/function creation and invocation.
+- [Function workflows](docs/workflows.md): alpha DAG workflow/run foundation using child `FunctionJob` resources.
 - [Deploy operator to OKE](docs/oke-deployment.md): Workload Identity, IAM, network, and overlay setup.
 - [Design overview](docs/design.md): CRDs, controllers, lifecycle, invoker contracts, and limitations.
 - [Local existing Function demo](docs/oci-mode-demo.md): local `OCI_AUTH_MODE=config` path against an already-created OCI Function.
