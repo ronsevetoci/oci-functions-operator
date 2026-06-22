@@ -1,0 +1,7 @@
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionWorkflowRun
+metadata:
+  name: managed-inline-workflow-run
+spec:
+  workflowRef:
+    name: managed-inline-workflow

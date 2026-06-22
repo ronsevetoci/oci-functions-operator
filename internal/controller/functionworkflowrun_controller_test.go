@@ -56,6 +56,13 @@ func TestFunctionWorkflowRunCreatesFirstEligibleNodeFunctionJob(t *testing.T) {
 		t.Fatalf("parallelism/retryLimit = %d/%d, want 2/1", job.Spec.Parallelism, job.Spec.RetryLimit)
 	}
 	updated := getWorkflowRun(t, ctx, k8sClient, run)
+	prepareStatus := workflowNodeStatusByName(t, updated.Status.Nodes, "prepare")
+	if prepareStatus.FunctionRef == nil || prepareStatus.FunctionRef.Name != "prepare-function" {
+		t.Fatalf("prepare functionRef status = %#v, want prepare-function", prepareStatus.FunctionRef)
+	}
+	if got := len(functionsForRun(t, ctx, k8sClient, run)); got != 0 {
+		t.Fatalf("child Function count = %d, want 0 for functionRef mode", got)
+	}
 	if updated.Status.NodeCount != 3 || updated.Status.CompletedNodes != 0 || updated.Status.FailedNodes != 0 {
 		t.Fatalf("node counters = nodes:%d complete:%d failed:%d, want 3/0/0", updated.Status.NodeCount, updated.Status.CompletedNodes, updated.Status.FailedNodes)
 	}
@@ -256,6 +263,176 @@ func TestFunctionWorkflowRunDoesNotCreateDuplicateFunctionJobsOnRepeatedReconcil
 	}
 }
 
+func TestFunctionWorkflowRunInlineFunctionCreatesChildFunction(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := inlineFunctionWorkflow("inline-demo", "default")
+	run := workflowRun("inline-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	functions := functionsForRun(t, ctx, k8sClient, run)
+	if got, want := len(functions), 1; got != want {
+		t.Fatalf("child Function count = %d, want %d", got, want)
+	}
+	function := functionsByWorkflowNode(t, functions)["prepare"]
+	if function == nil {
+		t.Fatalf("prepare child Function was not created")
+	}
+	if function.Name != workflowRunNodeFunctionName(run.Name, "prepare") {
+		t.Fatalf("child Function name = %q, want deterministic node name", function.Name)
+	}
+	if function.Spec.Config == nil || function.Spec.Config.DisplayName != "inline-prepare" {
+		t.Fatalf("child Function spec = %#v, want inline managed spec", function.Spec)
+	}
+	if got := len(functionJobsForRun(t, ctx, k8sClient, run)); got != 0 {
+		t.Fatalf("child FunctionJob count = %d, want 0 while Function is not Ready", got)
+	}
+	status := workflowNodeStatusByName(t, getWorkflowRun(t, ctx, k8sClient, run).Status.Nodes, "prepare")
+	if status.ChildFunctionRef == nil || status.ChildFunctionRef.Name != function.Name {
+		t.Fatalf("childFunctionRef = %#v, want %q", status.ChildFunctionRef, function.Name)
+	}
+	if status.Phase != functionsv1alpha1.FunctionWorkflowNodePhaseRunning || !strings.Contains(status.Message, "Ready=True") {
+		t.Fatalf("node status = %#v, want Running waiting for Function readiness", status)
+	}
+}
+
+func TestFunctionWorkflowRunInlineFunctionWaitsUntilChildFunctionReady(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := inlineFunctionWorkflow("inline-demo", "default")
+	run := workflowRun("inline-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	if got := len(functionJobsForRun(t, ctx, k8sClient, run)); got != 0 {
+		t.Fatalf("child FunctionJob count = %d, want 0 while child Function is not Ready", got)
+	}
+	status := workflowNodeStatusByName(t, getWorkflowRun(t, ctx, k8sClient, run).Status.Nodes, "prepare")
+	if !strings.Contains(status.Message, "Ready=True") {
+		t.Fatalf("node message = %q, want Ready wait message", status.Message)
+	}
+}
+
+func TestFunctionWorkflowRunInlineFunctionCreatesFunctionJobAfterChildFunctionReady(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := inlineFunctionWorkflow("inline-demo", "default")
+	run := workflowRun("inline-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+	markFunctionReady(t, ctx, k8sClient, run.Namespace, workflowRunNodeFunctionName(run.Name, "prepare"))
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	jobs := jobsByWorkflowNode(t, functionJobsForRun(t, ctx, k8sClient, run))
+	job := jobs["prepare"]
+	if job == nil {
+		t.Fatalf("prepare FunctionJob was not created after child Function became Ready")
+	}
+	if job.Spec.FunctionRef.Name != workflowRunNodeFunctionName(run.Name, "prepare") {
+		t.Fatalf("FunctionJob functionRef.name = %q, want child Function name", job.Spec.FunctionRef.Name)
+	}
+	status := workflowNodeStatusByName(t, getWorkflowRun(t, ctx, k8sClient, run).Status.Nodes, "prepare")
+	if status.ChildFunctionRef == nil || status.FunctionJobRef == nil {
+		t.Fatalf("node status refs = child:%#v job:%#v, want both refs", status.ChildFunctionRef, status.FunctionJobRef)
+	}
+}
+
+func TestFunctionWorkflowRunInlineFunctionDoesNotCreateDuplicateChildFunctionOnRepeatedReconcile(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := inlineFunctionWorkflow("inline-demo", "default")
+	run := workflowRun("inline-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	if got, want := len(functionsForRun(t, ctx, k8sClient, run)), 1; got != want {
+		t.Fatalf("child Function count = %d, want %d after repeated reconcile", got, want)
+	}
+}
+
+func TestFunctionWorkflowRunNodeWithoutFunctionFailsClearly(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := threeNodeWorkflow("demo", "default")
+	workflow.Spec.Nodes[0].FunctionRef = nil
+	run := workflowRun("demo-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	updated := getWorkflowRun(t, ctx, k8sClient, run)
+	if updated.Status.Phase != functionsv1alpha1.FunctionWorkflowRunPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	failed := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionWorkflowRunConditionFailed)
+	if failed == nil || failed.Reason != "InvalidNodeFunction" || !strings.Contains(failed.Message, "exactly one of functionRef or function") {
+		t.Fatalf("Failed condition = %#v, want clear missing function validation", failed)
+	}
+}
+
+func TestFunctionWorkflowRunNodeWithFunctionRefAndFunctionFailsClearly(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	workflow := threeNodeWorkflow("demo", "default")
+	workflow.Spec.Nodes[0].Function = inlineManagedFunctionSpec("inline-prepare")
+	run := workflowRun("demo-run", "default", workflow.Name)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
+		WithObjects(workflow, run).
+		Build()
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+
+	reconcileWorkflowRun(t, ctx, reconciler, run)
+
+	updated := getWorkflowRun(t, ctx, k8sClient, run)
+	if updated.Status.Phase != functionsv1alpha1.FunctionWorkflowRunPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	failed := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionWorkflowRunConditionFailed)
+	if failed == nil || failed.Reason != "InvalidNodeFunction" || !strings.Contains(failed.Message, "exactly one of functionRef or function") {
+		t.Fatalf("Failed condition = %#v, want clear mutually-exclusive function validation", failed)
+	}
+}
+
 func threeNodeWorkflow(name, namespace string) *functionsv1alpha1.FunctionWorkflow {
 	return &functionsv1alpha1.FunctionWorkflow{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -263,24 +440,54 @@ func threeNodeWorkflow(name, namespace string) *functionsv1alpha1.FunctionWorkfl
 			Nodes: []functionsv1alpha1.FunctionWorkflowNode{
 				{
 					Name:        "prepare",
-					FunctionRef: functionsv1alpha1.FunctionReference{Name: "prepare-function"},
+					FunctionRef: &functionsv1alpha1.FunctionReference{Name: "prepare-function"},
 					Payload:     rawPayloadPtr(`{"step":"prepare"}`),
 					Parallelism: 2,
 					RetryLimit:  1,
 				},
 				{
 					Name:        "process",
-					FunctionRef: functionsv1alpha1.FunctionReference{Name: "process-function"},
+					FunctionRef: &functionsv1alpha1.FunctionReference{Name: "process-function"},
 					DependsOn:   []string{"prepare"},
 					Payload:     rawPayloadPtr(`{"step":"process"}`),
 				},
 				{
 					Name:        "notify",
-					FunctionRef: functionsv1alpha1.FunctionReference{Name: "notify-function"},
+					FunctionRef: &functionsv1alpha1.FunctionReference{Name: "notify-function"},
 					DependsOn:   []string{"process"},
 					Payload:     rawPayloadPtr(`{"step":"notify"}`),
 				},
 			},
+		},
+	}
+}
+
+func inlineFunctionWorkflow(name, namespace string) *functionsv1alpha1.FunctionWorkflow {
+	return &functionsv1alpha1.FunctionWorkflow{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: functionsv1alpha1.FunctionWorkflowSpec{
+			Nodes: []functionsv1alpha1.FunctionWorkflowNode{{
+				Name:     "prepare",
+				Function: inlineManagedFunctionSpec("inline-prepare"),
+				Payload:  rawPayloadPtr(`{"step":"prepare"}`),
+			}},
+		},
+	}
+}
+
+func inlineManagedFunctionSpec(displayName string) *functionsv1alpha1.FunctionSpec {
+	return &functionsv1alpha1.FunctionSpec{
+		Mode: functionsv1alpha1.FunctionModeManaged,
+		Config: &functionsv1alpha1.FunctionConfig{
+			Region:           "me-jeddah-1",
+			CompartmentID:    "ocid1.compartment.oc1..exampleuniqueid",
+			ApplicationName:  "workflow-app",
+			SubnetIDs:        []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			NSGIDs:           []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"},
+			DisplayName:      displayName,
+			Image:            "jed.ocir.io/example/hello-function:0.0.1",
+			MemoryInMBs:      128,
+			TimeoutInSeconds: 30,
 		},
 	}
 }
@@ -339,6 +546,22 @@ func functionJobsForRun(t *testing.T, ctx context.Context, k8sClient client.Clie
 	return jobs
 }
 
+func functionsForRun(t *testing.T, ctx context.Context, k8sClient client.Client, run *functionsv1alpha1.FunctionWorkflowRun) []functionsv1alpha1.Function {
+	t.Helper()
+
+	var list functionsv1alpha1.FunctionList
+	if err := k8sClient.List(ctx, &list, client.InNamespace(run.Namespace)); err != nil {
+		t.Fatalf("list Functions: %v", err)
+	}
+	functions := []functionsv1alpha1.Function{}
+	for _, function := range list.Items {
+		if metav1.IsControlledBy(&function, run) {
+			functions = append(functions, function)
+		}
+	}
+	return functions
+}
+
 func jobsByWorkflowNode(t *testing.T, jobs []functionsv1alpha1.FunctionJob) map[string]*functionsv1alpha1.FunctionJob {
 	t.Helper()
 
@@ -350,6 +573,21 @@ func jobsByWorkflowNode(t *testing.T, jobs []functionsv1alpha1.FunctionJob) map[
 			t.Fatalf("FunctionJob %q is missing workflow node annotation", job.Name)
 		}
 		byNode[node] = job
+	}
+	return byNode
+}
+
+func functionsByWorkflowNode(t *testing.T, functions []functionsv1alpha1.Function) map[string]*functionsv1alpha1.Function {
+	t.Helper()
+
+	byNode := map[string]*functionsv1alpha1.Function{}
+	for i := range functions {
+		function := &functions[i]
+		node := function.Annotations[workflowNodeAnnotation]
+		if node == "" {
+			t.Fatalf("Function %q is missing workflow node annotation", function.Name)
+		}
+		byNode[node] = function
 	}
 	return byNode
 }
@@ -374,6 +612,32 @@ func completeFunctionJob(t *testing.T, ctx context.Context, k8sClient client.Cli
 func failFunctionJob(t *testing.T, ctx context.Context, k8sClient client.Client, namespace, name, message string) {
 	t.Helper()
 	updateFunctionJobPhase(t, ctx, k8sClient, namespace, name, functionsv1alpha1.FunctionJobPhaseFailed, message)
+}
+
+func markFunctionReady(t *testing.T, ctx context.Context, k8sClient client.Client, namespace, name string) {
+	t.Helper()
+
+	var function functionsv1alpha1.Function
+	key := types.NamespacedName{Name: name, Namespace: namespace}
+	if err := k8sClient.Get(ctx, key, &function); err != nil {
+		t.Fatalf("get Function %s: %v", name, err)
+	}
+	now := metav1.Now()
+	function.Status.Phase = functionsv1alpha1.FunctionPhaseReady
+	function.Status.FunctionID = "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid"
+	function.Status.FunctionOCID = function.Status.FunctionID
+	function.Status.InvokeEndpoint = "https://functions.me-jeddah-1.oci.oraclecloud.com"
+	function.Status.Conditions = []metav1.Condition{{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ManagedFunctionReady",
+		Message:            "Managed OCI Function is ready.",
+		ObservedGeneration: function.Generation,
+		LastTransitionTime: now,
+	}}
+	if err := k8sClient.Status().Update(ctx, &function); err != nil {
+		t.Fatalf("update Function status %s: %v", name, err)
+	}
 }
 
 func updateFunctionJobPhase(t *testing.T, ctx context.Context, k8sClient client.Client, namespace, name string, phase functionsv1alpha1.FunctionJobPhase, lastError string) {

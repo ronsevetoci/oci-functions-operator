@@ -4,7 +4,12 @@ Function workflows are the v2 foundation for Kubernetes-native orchestration aro
 
 ## Resources
 
-`FunctionWorkflow` is the reusable DAG template. It contains named nodes, and each node references a `Function` in the same namespace:
+`FunctionWorkflow` is the reusable DAG template. It contains named nodes. Each node chooses exactly one function source:
+
+- `functionRef`: reference an existing `Function` in the same namespace.
+- `function`: inline `Function.spec` used by the workflow run controller to create a child `Function`.
+
+Use `functionRef` when the `Function` lifecycle is managed separately:
 
 ```yaml
 spec:
@@ -21,6 +26,30 @@ spec:
     - prepare
 ```
 
+Use inline `function` when the workflow should create the `Function` for the run:
+
+```yaml
+spec:
+  nodes:
+  - name: prepare
+    function:
+      mode: Managed
+      config:
+        region: me-jeddah-1
+        compartmentId: <COMPARTMENT_OCID>
+        applicationName: oke-functions-operator-workflow
+        subnetIds:
+        - <SUBNET_OCID>
+        # nsgIds:
+        # - <NSG_OCID>
+        displayName: managed-inline-prepare
+        image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
+        memoryInMBs: 256
+        timeoutInSeconds: 120
+    payload:
+      step: prepare
+```
+
 `FunctionWorkflowRun` is one execution of a workflow:
 
 ```yaml
@@ -29,19 +58,40 @@ spec:
     name: hello-workflow
 ```
 
-The run controller reads the referenced workflow, validates the node graph, creates child `FunctionJob` resources for eligible nodes, and writes aggregate status to `FunctionWorkflowRun.status`.
+The run controller reads the referenced workflow, validates the node graph, creates child `Function` resources for inline nodes, creates child `FunctionJob` resources for eligible ready nodes, and writes aggregate status to `FunctionWorkflowRun.status`.
 
 ## Execution Model
 
 - A node with no `dependsOn` can start first.
 - A node starts only after all dependencies complete successfully.
-- Each node creates one child `FunctionJob` owned by the `FunctionWorkflowRun`.
+- A `functionRef` node creates its child `FunctionJob` as soon as dependencies complete.
+- An inline `function` node first creates a deterministic child `Function`, waits for `Ready=True`, then creates its child `FunctionJob`.
+- Child `Function` and `FunctionJob` resources are owned by the `FunctionWorkflowRun`.
 - Node `payload` is passed to that child job as a single `spec.payload` item.
 - Node `parallelism` and `retryLimit` are passed through to the child job.
-- Child job names are deterministic, so repeated reconciles do not create duplicate jobs.
+- Child Function names and child job names are deterministic, so repeated reconciles do not create duplicate resources.
 - If a node job fails, dependent nodes are skipped and the run fails with a clear condition.
 
-Use `kubectl describe functionworkflowrun <name>` or inspect YAML to see node-level status, child job references, start times, completion times, and failure messages.
+Use `kubectl describe functionworkflowrun <name>` or inspect YAML to see node-level status, `functionRef` or `childFunctionRef`, child job references, start times, completion times, and failure messages.
+
+## Inline Function Requirements
+
+Inline `function` uses the existing `Function` CRD and `FunctionReconciler`; the workflow controller does not implement OCI lifecycle logic itself. The child `Function` has an owner reference to the `FunctionWorkflowRun`, so deleting the run allows Kubernetes garbage collection to remove child `Function` and `FunctionJob` resources. OCI-side deletion/finalizers are still not implemented by this operator.
+
+Inline managed Functions have the same requirements as standalone managed Functions:
+
+- The manager must run in OCI mode with OKE Workload Identity and IAM permissions for Functions and network resources.
+- The function runtime image must be an OCI Functions-compatible Fn image in same-region OCIR, such as `jed.ocir.io/...` for Jeddah.
+- The Functions application subnet must route to Oracle Services Network/OCIR.
+- If `nsgIds` are set, attached NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
+- Public OCIR repositories still require network egress from the Functions application.
+
+The sample inline managed workflow uses placeholders and is not included in `config/samples/kustomization.yaml`:
+
+```sh
+kubectl apply -f config/samples/functions_v1alpha1_functionworkflow_inline_managed.yaml
+kubectl apply -f config/samples/functions_v1alpha1_functionworkflowrun_inline_managed.yaml
+```
 
 ## Current Alpha Limits
 
@@ -53,6 +103,7 @@ Use `kubectl describe functionworkflowrun <name>` or inspect YAML to see node-le
 - No `FunctionTrigger` yet.
 - No OCI Events, Queue, Streaming, Object Storage, or Kubernetes resource-watch triggers yet.
 - Workflow nodes rely on existing `FunctionJob` behavior for invocation, retries, and per-payload status.
+- Inline Functions rely on existing `Function` behavior for OCI lifecycle and readiness.
 
 ## Run The Sample
 

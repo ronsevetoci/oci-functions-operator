@@ -160,6 +160,21 @@ spec:
                   description: FunctionWorkflowRunNodeStatus records execution state
                     for one workflow node.
                   properties:
+                    childFunctionRef:
+                      description: ChildFunctionRef references the child Function
+                        created for this node when spec.nodes[].function is set.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
                     completionTime:
                       description: CompletionTime is when the node reached a terminal
                         phase.
@@ -168,6 +183,21 @@ spec:
                     functionJobRef:
                       description: FunctionJobRef references the child FunctionJob
                         created for this node.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    functionRef:
+                      description: FunctionRef references the existing Function used
+                        by this node when spec.nodes[].functionRef is set.
                       properties:
                         name:
                           default: ""

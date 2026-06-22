@@ -16,6 +16,7 @@ import (
 	functionsv1alpha1 "github.com/oracle/oci-functions-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,6 +49,7 @@ type FunctionWorkflowRunReconciler struct {
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflowruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflowruns/finalizers,verbs=update
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflows,verbs=get;list;watch
+// +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionjobs,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -133,6 +135,7 @@ func (r *FunctionWorkflowRunReconciler) reconcileWorkflowNodes(
 	for _, nodeName := range nodeOrder {
 		node := nodeByName[nodeName]
 		status := statusByName[nodeName]
+		status = setNodeFunctionRefs(run, node, status)
 		if _, hasJob := childJobs[nodeName]; hasJob {
 			statusByName[nodeName] = status
 			continue
@@ -157,7 +160,23 @@ func (r *FunctionWorkflowRunReconciler) reconcileWorkflowNodes(
 			continue
 		}
 
-		job, err := r.ensureNodeFunctionJob(ctx, run, node)
+		functionName, functionStatus, functionReady, err := r.resolveNodeFunction(ctx, run, node, status, now)
+		if err != nil {
+			functionStatus.Phase = functionsv1alpha1.FunctionWorkflowNodePhaseFailed
+			functionStatus.Message = err.Error()
+			if functionStatus.CompletionTime == nil {
+				functionStatus.CompletionTime = &now
+			}
+			statusByName[nodeName] = functionStatus
+			return workflowNodeStatusesInSpecOrder(workflow.Spec.Nodes, statusByName), err
+		}
+		status = functionStatus
+		if !functionReady {
+			statusByName[nodeName] = status
+			continue
+		}
+
+		job, err := r.ensureNodeFunctionJob(ctx, run, node, functionName)
 		if err != nil {
 			status.Phase = functionsv1alpha1.FunctionWorkflowNodePhaseFailed
 			status.Message = err.Error()
@@ -180,6 +199,19 @@ func (r *FunctionWorkflowRunReconciler) reconcileWorkflowNodes(
 	}
 
 	return workflowNodeStatusesInSpecOrder(workflow.Spec.Nodes, statusByName), nil
+}
+
+func setNodeFunctionRefs(run *functionsv1alpha1.FunctionWorkflowRun, node functionsv1alpha1.FunctionWorkflowNode, status functionsv1alpha1.FunctionWorkflowRunNodeStatus) functionsv1alpha1.FunctionWorkflowRunNodeStatus {
+	if node.FunctionRef != nil {
+		status.FunctionRef = &corev1.LocalObjectReference{Name: node.FunctionRef.Name}
+		status.ChildFunctionRef = nil
+		return status
+	}
+	if node.Function != nil {
+		status.FunctionRef = nil
+		status.ChildFunctionRef = &corev1.LocalObjectReference{Name: workflowRunNodeFunctionName(run.Name, node.Name)}
+	}
+	return status
 }
 
 func initializeWorkflowNodeStatuses(
@@ -263,7 +295,116 @@ func workflowNodeStatusesInSpecOrder(nodes []functionsv1alpha1.FunctionWorkflowN
 	return statuses
 }
 
-func (r *FunctionWorkflowRunReconciler) ensureNodeFunctionJob(ctx context.Context, run *functionsv1alpha1.FunctionWorkflowRun, node functionsv1alpha1.FunctionWorkflowNode) (*functionsv1alpha1.FunctionJob, error) {
+func (r *FunctionWorkflowRunReconciler) resolveNodeFunction(
+	ctx context.Context,
+	run *functionsv1alpha1.FunctionWorkflowRun,
+	node functionsv1alpha1.FunctionWorkflowNode,
+	status functionsv1alpha1.FunctionWorkflowRunNodeStatus,
+	now metav1.Time,
+) (string, functionsv1alpha1.FunctionWorkflowRunNodeStatus, bool, error) {
+	if node.FunctionRef != nil {
+		return node.FunctionRef.Name, status, true, nil
+	}
+
+	function, created, err := r.ensureNodeFunction(ctx, run, node)
+	if err != nil {
+		return "", status, false, err
+	}
+
+	status.Phase = functionsv1alpha1.FunctionWorkflowNodePhaseRunning
+	if status.StartedAt == nil {
+		status.StartedAt = &now
+	}
+	status.CompletionTime = nil
+	if created {
+		status.Message = fmt.Sprintf("Created child Function %q and waiting for Ready=True.", function.Name)
+		return function.Name, status, false, nil
+	}
+	if function.IsReady() {
+		return function.Name, status, true, nil
+	}
+	if function.Status.Phase == functionsv1alpha1.FunctionPhaseError {
+		status.Phase = functionsv1alpha1.FunctionWorkflowNodePhaseFailed
+		status.Message = childFunctionNotReadyMessage(function)
+		status.CompletionTime = &now
+		return "", status, false, nil
+	}
+	status.Message = childFunctionNotReadyMessage(function)
+	return function.Name, status, false, nil
+}
+
+func (r *FunctionWorkflowRunReconciler) ensureNodeFunction(ctx context.Context, run *functionsv1alpha1.FunctionWorkflowRun, node functionsv1alpha1.FunctionWorkflowNode) (*functionsv1alpha1.Function, bool, error) {
+	functionName := workflowRunNodeFunctionName(run.Name, node.Name)
+	var existing functionsv1alpha1.Function
+	key := types.NamespacedName{Namespace: run.Namespace, Name: functionName}
+	if err := r.Get(ctx, key, &existing); err == nil {
+		if !metav1.IsControlledBy(&existing, run) {
+			return nil, false, fmt.Errorf("Function %q already exists and is not controlled by FunctionWorkflowRun %q", functionName, run.Name)
+		}
+		if existing.Annotations == nil || existing.Annotations[workflowNodeAnnotation] != node.Name {
+			return nil, false, fmt.Errorf("Function %q is controlled by FunctionWorkflowRun %q but is not associated with node %q", functionName, run.Name, node.Name)
+		}
+		return &existing, false, nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, false, err
+	}
+
+	spec := node.Function.DeepCopy()
+	function := &functionsv1alpha1.Function{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      functionName,
+			Namespace: run.Namespace,
+			Annotations: map[string]string{
+				workflowNodeAnnotation: node.Name,
+			},
+		},
+		Spec: *spec,
+	}
+	if err := ctrl.SetControllerReference(run, function, r.Scheme); err != nil {
+		return nil, false, err
+	}
+	if err := r.Create(ctx, function); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			var created functionsv1alpha1.Function
+			if getErr := r.Get(ctx, key, &created); getErr != nil {
+				return nil, false, getErr
+			}
+			if metav1.IsControlledBy(&created, run) && created.Annotations[workflowNodeAnnotation] == node.Name {
+				return &created, false, nil
+			}
+		}
+		return nil, false, err
+	}
+	return function, true, nil
+}
+
+func childFunctionNotReadyMessage(function *functionsv1alpha1.Function) string {
+	message := fmt.Sprintf("Waiting for child Function %q to become Ready=True.", function.Name)
+	details := []string{}
+	if function.Status.Phase != "" {
+		details = append(details, fmt.Sprintf("phase=%s", function.Status.Phase))
+	}
+	condition := meta.FindStatusCondition(function.Status.Conditions, functionsv1alpha1.FunctionConditionReady)
+	if condition != nil {
+		conditionDetail := fmt.Sprintf("Ready=%s", condition.Status)
+		if condition.Reason != "" {
+			conditionDetail += " reason=" + condition.Reason
+		}
+		if condition.Message != "" {
+			conditionDetail += " message=" + condition.Message
+		}
+		details = append(details, conditionDetail)
+	}
+	if function.Status.Message != "" {
+		details = append(details, "message="+function.Status.Message)
+	}
+	if len(details) > 0 {
+		message += " " + strings.Join(details, "; ")
+	}
+	return message
+}
+
+func (r *FunctionWorkflowRunReconciler) ensureNodeFunctionJob(ctx context.Context, run *functionsv1alpha1.FunctionWorkflowRun, node functionsv1alpha1.FunctionWorkflowNode, functionName string) (*functionsv1alpha1.FunctionJob, error) {
 	jobName := workflowRunNodeJobName(run.Name, node.Name)
 	var existing functionsv1alpha1.FunctionJob
 	key := types.NamespacedName{Namespace: run.Namespace, Name: jobName}
@@ -288,7 +429,7 @@ func (r *FunctionWorkflowRunReconciler) ensureNodeFunctionJob(ctx context.Contex
 			},
 		},
 		Spec: functionsv1alpha1.FunctionJobSpec{
-			FunctionRef: node.FunctionRef,
+			FunctionRef: functionsv1alpha1.FunctionReference{Name: functionName},
 			Payload:     copyRawExtension(node.Payload),
 			Parallelism: effectiveWorkflowNodeParallelism(node),
 			RetryLimit:  effectiveWorkflowNodeRetryLimit(node),
@@ -556,8 +697,12 @@ func validateWorkflowTemplate(nodes []functionsv1alpha1.FunctionWorkflowNode) ([
 		switch {
 		case node.Name == "":
 			return nil, &workflowValidationError{reason: "InvalidNode", message: "Workflow node name is required."}
-		case node.FunctionRef.Name == "":
-			return nil, &workflowValidationError{reason: "InvalidNode", node: node.Name, message: fmt.Sprintf("Workflow node %q requires spec.nodes[].functionRef.name.", node.Name)}
+		case node.FunctionRef == nil && node.Function == nil:
+			return nil, &workflowValidationError{reason: "InvalidNodeFunction", node: node.Name, message: fmt.Sprintf("Workflow node %q must set exactly one of functionRef or function.", node.Name)}
+		case node.FunctionRef != nil && node.Function != nil:
+			return nil, &workflowValidationError{reason: "InvalidNodeFunction", node: node.Name, message: fmt.Sprintf("Workflow node %q must set exactly one of functionRef or function.", node.Name)}
+		case node.FunctionRef != nil && node.FunctionRef.Name == "":
+			return nil, &workflowValidationError{reason: "InvalidNodeFunction", node: node.Name, message: fmt.Sprintf("Workflow node %q requires spec.nodes[].functionRef.name.", node.Name)}
 		}
 		if _, exists := nodeByName[node.Name]; exists {
 			return nil, &workflowValidationError{reason: "DuplicateNode", node: node.Name, message: fmt.Sprintf("Workflow node name %q must be unique.", node.Name)}
@@ -621,7 +766,15 @@ func validationNodeStatuses(nodes []functionsv1alpha1.FunctionWorkflowNode, vali
 	return statuses
 }
 
+func workflowRunNodeFunctionName(runName, nodeName string) string {
+	return workflowRunNodeChildName(runName, nodeName)
+}
+
 func workflowRunNodeJobName(runName, nodeName string) string {
+	return workflowRunNodeChildName(runName, nodeName)
+}
+
+func workflowRunNodeChildName(runName, nodeName string) string {
 	base := sanitizeDNSLabel(runName + "-" + nodeName)
 	if len(base) <= 63 {
 		return base
@@ -692,6 +845,7 @@ func effectiveWorkflowNodeRetryLimit(node functionsv1alpha1.FunctionWorkflowNode
 func (r *FunctionWorkflowRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&functionsv1alpha1.FunctionWorkflowRun{}).
+		Owns(&functionsv1alpha1.Function{}).
 		Owns(&functionsv1alpha1.FunctionJob{}).
 		Complete(r)
 }

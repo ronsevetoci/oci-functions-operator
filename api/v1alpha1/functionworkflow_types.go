@@ -55,6 +55,7 @@ type FunctionWorkflowSpec struct {
 }
 
 // FunctionWorkflowNode describes one function invocation node in a workflow DAG.
+// +kubebuilder:validation:XValidation:rule="has(self.functionRef) != has(self.function)",message="exactly one of functionRef or function is required"
 type FunctionWorkflowNode struct {
 	// Name is the stable node identifier used by dependsOn and status.
 	// +kubebuilder:validation:MinLength=1
@@ -63,7 +64,12 @@ type FunctionWorkflowNode struct {
 	Name string `json:"name"`
 
 	// FunctionRef references a Function in the same namespace as the workflow run.
-	FunctionRef FunctionReference `json:"functionRef"`
+	// +optional
+	FunctionRef *FunctionReference `json:"functionRef,omitempty"`
+
+	// Function is an inline Function spec used to create a child Function for this workflow run.
+	// +optional
+	Function *FunctionSpec `json:"function,omitempty"`
 
 	// DependsOn lists node names that must complete successfully before this node starts.
 	// +optional
@@ -209,6 +215,14 @@ type FunctionWorkflowRunNodeStatus struct {
 	// FunctionJobRef references the child FunctionJob created for this node.
 	// +optional
 	FunctionJobRef *corev1.LocalObjectReference `json:"functionJobRef,omitempty"`
+
+	// FunctionRef references the existing Function used by this node when spec.nodes[].functionRef is set.
+	// +optional
+	FunctionRef *corev1.LocalObjectReference `json:"functionRef,omitempty"`
+
+	// ChildFunctionRef references the child Function created for this node when spec.nodes[].function is set.
+	// +optional
+	ChildFunctionRef *corev1.LocalObjectReference `json:"childFunctionRef,omitempty"`
 
 	// Message is a short human-readable node status summary.
 	// +optional

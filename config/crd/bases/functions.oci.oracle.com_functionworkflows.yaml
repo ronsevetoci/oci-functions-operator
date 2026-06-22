@@ -65,6 +65,171 @@ spec:
                         type: string
                       type: array
                       x-kubernetes-list-type: set
+                    function:
+                      description: Function is an inline Function spec used to create
+                        a child Function for this workflow run.
+                      properties:
+                        config:
+                          description: Config describes desired function configuration
+                            for managed lifecycle.
+                          properties:
+                            applicationName:
+                              description: ApplicationName is the display name of
+                                the OCI Functions application to ensure.
+                              maxLength: 255
+                              minLength: 1
+                              type: string
+                            applicationOcid:
+                              description: |-
+                                ApplicationOCID is an existing OCI Functions application OCID.
+                                Deprecated: use applicationName and subnetIds for managed application reconciliation.
+                              pattern: ^ocid1\.fnapp\..+
+                              type: string
+                            compartmentId:
+                              description: CompartmentID is the compartment OCID for
+                                the managed application/function.
+                              pattern: ^ocid1\.compartment\..+
+                              type: string
+                            config:
+                              additionalProperties:
+                                type: string
+                              description: Config is the OCI function configuration
+                                map.
+                              type: object
+                            displayName:
+                              description: DisplayName is the OCI function display
+                                name.
+                              maxLength: 255
+                              minLength: 1
+                              type: string
+                            environment:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                Environment is a deprecated alias for Config.
+                                Deprecated: use config.
+                              type: object
+                            freeformTags:
+                              additionalProperties:
+                                type: string
+                              description: FreeformTags are OCI freeform tags to apply
+                                to managed resources.
+                              type: object
+                            image:
+                              description: |-
+                                Image is the OCI Functions-compatible runtime image reference.
+                                Managed functions should use a same-region OCIR image, such as jed.ocir.io/... for me-jeddah-1.
+                              minLength: 1
+                              type: string
+                            memoryInMB:
+                              description: |-
+                                MemoryInMB is a deprecated alias for MemoryInMBs.
+                                Deprecated: use memoryInMBs.
+                              enum:
+                              - 128
+                              - 256
+                              - 512
+                              - 1024
+                              - 2048
+                              format: int32
+                              type: integer
+                            memoryInMBs:
+                              default: 128
+                              description: MemoryInMBs is the memory size to configure.
+                              enum:
+                              - 128
+                              - 256
+                              - 512
+                              - 1024
+                              - 2048
+                              format: int32
+                              type: integer
+                            nsgIds:
+                              description: |-
+                                NSGIDs are the Network Security Group OCIDs to attach to the managed OCI Functions application.
+                                When omitted, the operator leaves NSGs unmanaged on existing applications.
+                                Set an empty list to explicitly clear all NSGs from an existing application.
+                                Set a non-empty list to create new applications with those NSGs and reconcile existing applications to that set.
+                              items:
+                                pattern: ^ocid1\.networksecuritygroup\..+
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            region:
+                              description: Region is the OCI region identifier, such
+                                as me-jeddah-1.
+                              minLength: 1
+                              type: string
+                            subnetIds:
+                              description: SubnetIDs are the subnet OCIDs for a newly
+                                created application.
+                              items:
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            timeoutInSeconds:
+                              default: 30
+                              description: TimeoutInSeconds is the max execution time
+                                for the function.
+                              format: int32
+                              maximum: 300
+                              minimum: 1
+                              type: integer
+                          required:
+                          - applicationName
+                          - compartmentId
+                          - displayName
+                          - image
+                          - region
+                          - subnetIds
+                          type: object
+                        existingFunctionOcid:
+                          description: |-
+                            ExistingFunctionOCID points at an existing OCI Functions function.
+                            Deprecated: use FunctionID.
+                          pattern: ^ocid1\.fnfunc\..+
+                          type: string
+                        functionId:
+                          description: FunctionID points at an existing OCI Functions
+                            function OCID.
+                          pattern: ^ocid1\.fnfunc\..+
+                          type: string
+                        invokeEndpoint:
+                          description: |-
+                            InvokeEndpoint is the OCI Functions invoke endpoint for an existing function.
+                            Managed functions discover this endpoint into status.
+                          pattern: ^https?://.+
+                          type: string
+                        mode:
+                          description: |-
+                            Mode selects whether the operator references an existing OCI Function or manages one.
+                            When omitted, mode is inferred from functionId/existingFunctionOcid or config.
+                          enum:
+                          - Existing
+                          - Managed
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: one of spec.functionId, spec.existingFunctionOcid,
+                          or spec.config is required
+                        rule: has(self.functionId) || has(self.existingFunctionOcid)
+                          || has(self.config)
+                      - message: spec.config is mutually exclusive with existing function
+                          references
+                        rule: '!(has(self.config) && (has(self.functionId) || has(self.existingFunctionOcid)))'
+                      - message: spec.functionId and spec.existingFunctionOcid are
+                          mutually exclusive
+                        rule: '!(has(self.functionId) && has(self.existingFunctionOcid))'
+                      - message: existing Function mode requires spec.invokeEndpoint
+                        rule: '!(has(self.functionId) || has(self.existingFunctionOcid))
+                          || has(self.invokeEndpoint)'
+                      - message: mode Existing requires spec.functionId or spec.existingFunctionOcid
+                          and spec.invokeEndpoint
+                        rule: '!has(self.mode) || self.mode != ''Existing'' || ((has(self.functionId)
+                          || has(self.existingFunctionOcid)) && has(self.invokeEndpoint))'
+                      - message: mode Managed requires spec.config
+                        rule: '!has(self.mode) || self.mode != ''Managed'' || has(self.config)'
                     functionRef:
                       description: FunctionRef references a Function in the same namespace
                         as the workflow run.
@@ -103,9 +268,11 @@ spec:
                       minimum: 0
                       type: integer
                   required:
-                  - functionRef
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of functionRef or function is required
+                    rule: has(self.functionRef) != has(self.function)
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:

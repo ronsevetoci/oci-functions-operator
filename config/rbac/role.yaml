@@ -44,6 +44,14 @@ rules:
   - functions.oci.oracle.com
   resources:
   - functions
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - functions.oci.oracle.com
+  resources:
   - functionworkflowruns
   - functionworkflows
   verbs:
