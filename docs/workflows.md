@@ -72,12 +72,33 @@ kubectl apply -k config/samples
 kubectl get functionworkflowruns -w
 ```
 
+Expected `kubectl get` output after the sample completes:
+
+```text
+NAME                 PHASE      NODES   COMPLETE   FAILED   AGE
+hello-workflow-run   Complete   3       3          0        30s
+```
+
 Inspect the workflow run and child jobs:
 
 ```sh
 kubectl describe functionworkflowrun hello-workflow-run
 kubectl get functionjobs
 kubectl get functionworkflowrun hello-workflow-run -o yaml
+```
+
+`kubectl describe functionworkflowrun hello-workflow-run` should show `Running`, `Complete`, and `Failed` conditions, node status entries with child `FunctionJob` references, and events similar to:
+
+```text
+Type    Reason                    Message
+Normal  WorkflowStarted           FunctionWorkflowRun started workflow "hello-workflow".
+Normal  NodeFunctionJobCreated    Node "prepare" created FunctionJob "hello-workflow-run-prepare".
+Normal  NodeCompleted             Node "prepare" completed.
+Normal  NodeFunctionJobCreated    Node "process" created FunctionJob "hello-workflow-run-process".
+Normal  NodeCompleted             Node "process" completed.
+Normal  NodeFunctionJobCreated    Node "notify" created FunctionJob "hello-workflow-run-notify".
+Normal  NodeCompleted             Node "notify" completed.
+Normal  WorkflowComplete          FunctionWorkflowRun completed: 3 node(s) completed successfully.
 ```
 
 The sample uses this three-node DAG:

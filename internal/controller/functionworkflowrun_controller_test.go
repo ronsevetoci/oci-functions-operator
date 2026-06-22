@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -29,7 +30,8 @@ func TestFunctionWorkflowRunCreatesFirstEligibleNodeFunctionJob(t *testing.T) {
 		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
 		WithObjects(workflow, run).
 		Build()
-	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+	recorder := record.NewFakeRecorder(10)
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme, Recorder: recorder}
 
 	reconcileWorkflowRun(t, ctx, reconciler, run)
 
@@ -53,6 +55,13 @@ func TestFunctionWorkflowRunCreatesFirstEligibleNodeFunctionJob(t *testing.T) {
 	if job.Spec.Parallelism != 2 || job.Spec.RetryLimit != 1 {
 		t.Fatalf("parallelism/retryLimit = %d/%d, want 2/1", job.Spec.Parallelism, job.Spec.RetryLimit)
 	}
+	updated := getWorkflowRun(t, ctx, k8sClient, run)
+	if updated.Status.NodeCount != 3 || updated.Status.CompletedNodes != 0 || updated.Status.FailedNodes != 0 {
+		t.Fatalf("node counters = nodes:%d complete:%d failed:%d, want 3/0/0", updated.Status.NodeCount, updated.Status.CompletedNodes, updated.Status.FailedNodes)
+	}
+	events := drainEvents(recorder)
+	assertEventContains(t, events, "Normal WorkflowStarted")
+	assertEventContains(t, events, "Normal NodeFunctionJobCreated")
 }
 
 func TestFunctionWorkflowRunDependentNodeWaitsUntilDependencyCompletes(t *testing.T) {
@@ -66,7 +75,8 @@ func TestFunctionWorkflowRunDependentNodeWaitsUntilDependencyCompletes(t *testin
 		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
 		WithObjects(workflow, run).
 		Build()
-	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+	recorder := record.NewFakeRecorder(20)
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme, Recorder: recorder}
 
 	reconcileWorkflowRun(t, ctx, reconciler, run)
 
@@ -92,7 +102,8 @@ func TestFunctionWorkflowRunStartsDependentNodeAfterDependencySucceeds(t *testin
 		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
 		WithObjects(workflow, run).
 		Build()
-	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+	recorder := record.NewFakeRecorder(20)
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme, Recorder: recorder}
 
 	reconcileWorkflowRun(t, ctx, reconciler, run)
 	completeFunctionJob(t, ctx, k8sClient, run.Namespace, workflowRunNodeJobName(run.Name, "prepare"))
@@ -118,7 +129,8 @@ func TestFunctionWorkflowRunCompletesWhenAllNodeJobsComplete(t *testing.T) {
 		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
 		WithObjects(workflow, run).
 		Build()
-	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+	recorder := record.NewFakeRecorder(20)
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme, Recorder: recorder}
 
 	reconcileWorkflowRun(t, ctx, reconciler, run)
 	completeFunctionJob(t, ctx, k8sClient, run.Namespace, workflowRunNodeJobName(run.Name, "prepare"))
@@ -135,10 +147,16 @@ func TestFunctionWorkflowRunCompletesWhenAllNodeJobsComplete(t *testing.T) {
 	if updated.Status.CompletionTime == nil {
 		t.Fatalf("completionTime is nil, want terminal timestamp")
 	}
+	if updated.Status.NodeCount != 3 || updated.Status.CompletedNodes != 3 || updated.Status.FailedNodes != 0 {
+		t.Fatalf("node counters = nodes:%d complete:%d failed:%d, want 3/3/0", updated.Status.NodeCount, updated.Status.CompletedNodes, updated.Status.FailedNodes)
+	}
 	complete := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionWorkflowRunConditionComplete)
 	if complete == nil || complete.Status != metav1.ConditionTrue {
 		t.Fatalf("Complete condition = %#v, want true", complete)
 	}
+	events := drainEvents(recorder)
+	assertEventContains(t, events, "Normal NodeCompleted")
+	assertEventContains(t, events, "Normal WorkflowComplete")
 }
 
 func TestFunctionWorkflowRunFailsWhenNodeFunctionJobFails(t *testing.T) {
@@ -152,7 +170,8 @@ func TestFunctionWorkflowRunFailsWhenNodeFunctionJobFails(t *testing.T) {
 		WithStatusSubresource(&functionsv1alpha1.FunctionWorkflowRun{}, &functionsv1alpha1.FunctionJob{}).
 		WithObjects(workflow, run).
 		Build()
-	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme}
+	recorder := record.NewFakeRecorder(20)
+	reconciler := &FunctionWorkflowRunReconciler{Client: k8sClient, Scheme: scheme, Recorder: recorder}
 
 	reconcileWorkflowRun(t, ctx, reconciler, run)
 	failFunctionJob(t, ctx, k8sClient, run.Namespace, workflowRunNodeJobName(run.Name, "prepare"), "boom")
@@ -170,10 +189,17 @@ func TestFunctionWorkflowRunFailsWhenNodeFunctionJobFails(t *testing.T) {
 	if process.Phase != functionsv1alpha1.FunctionWorkflowNodePhaseSkipped {
 		t.Fatalf("process phase = %q, want Skipped after failed dependency", process.Phase)
 	}
+	if updated.Status.NodeCount != 3 || updated.Status.CompletedNodes != 0 || updated.Status.FailedNodes != 1 || updated.Status.SkippedNodes != 2 {
+		t.Fatalf("node counters = nodes:%d complete:%d failed:%d skipped:%d, want 3/0/1/2", updated.Status.NodeCount, updated.Status.CompletedNodes, updated.Status.FailedNodes, updated.Status.SkippedNodes)
+	}
 	failed := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionWorkflowRunConditionFailed)
 	if failed == nil || failed.Status != metav1.ConditionTrue {
 		t.Fatalf("Failed condition = %#v, want true", failed)
 	}
+	events := drainEvents(recorder)
+	assertEventContains(t, events, "Warning NodeFailed")
+	assertEventContains(t, events, "Warning NodeSkipped")
+	assertEventContains(t, events, "Warning WorkflowFailed")
 }
 
 func TestFunctionWorkflowRunInvalidDependencyFailsWithClearStatus(t *testing.T) {

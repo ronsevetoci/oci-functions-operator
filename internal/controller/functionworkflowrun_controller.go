@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -26,12 +27,21 @@ import (
 
 const (
 	workflowNodeAnnotation = "functions.oci.oracle.com/workflow-node"
+
+	workflowRunEventStarted               = "WorkflowStarted"
+	workflowRunEventNodeFunctionJobCreate = "NodeFunctionJobCreated"
+	workflowRunEventNodeComplete          = "NodeCompleted"
+	workflowRunEventNodeFailed            = "NodeFailed"
+	workflowRunEventNodeSkipped           = "NodeSkipped"
+	workflowRunEventComplete              = "WorkflowComplete"
+	workflowRunEventFailed                = "WorkflowFailed"
 )
 
 // FunctionWorkflowRunReconciler reconciles a FunctionWorkflowRun object.
 type FunctionWorkflowRunReconciler struct {
 	client.Client
-	Scheme *apiruntime.Scheme
+	Scheme   *apiruntime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflowruns,verbs=get;list;watch
@@ -39,6 +49,7 @@ type FunctionWorkflowRunReconciler struct {
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflowruns/finalizers,verbs=update
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionworkflows,verbs=get;list;watch
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functionjobs,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile executes the next eligible workflow nodes by creating child FunctionJobs.
 func (r *FunctionWorkflowRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -431,11 +442,98 @@ func setWorkflowRunCondition(run *functionsv1alpha1.FunctionWorkflowRun, now met
 }
 
 func (r *FunctionWorkflowRunReconciler) updateFunctionWorkflowRunStatus(ctx context.Context, run *functionsv1alpha1.FunctionWorkflowRun, desired functionsv1alpha1.FunctionWorkflowRunStatus) error {
+	updateWorkflowRunNodeCounts(&desired)
 	if reflect.DeepEqual(run.Status, desired) {
 		return nil
 	}
+	original := run.Status.DeepCopy()
 	run.Status = desired
-	return r.Status().Update(ctx, run)
+	if err := r.Status().Update(ctx, run); err != nil {
+		return err
+	}
+	r.recordWorkflowRunEvents(run, *original, desired)
+	return nil
+}
+
+func updateWorkflowRunNodeCounts(status *functionsv1alpha1.FunctionWorkflowRunStatus) {
+	status.NodeCount = int32(len(status.Nodes))
+	status.CompletedNodes = 0
+	status.FailedNodes = 0
+	status.SkippedNodes = 0
+
+	for _, node := range status.Nodes {
+		switch node.Phase {
+		case functionsv1alpha1.FunctionWorkflowNodePhaseComplete:
+			status.CompletedNodes++
+		case functionsv1alpha1.FunctionWorkflowNodePhaseFailed:
+			status.FailedNodes++
+		case functionsv1alpha1.FunctionWorkflowNodePhaseSkipped:
+			status.SkippedNodes++
+		}
+	}
+}
+
+func (r *FunctionWorkflowRunReconciler) recordWorkflowRunEvents(run *functionsv1alpha1.FunctionWorkflowRun, original, desired functionsv1alpha1.FunctionWorkflowRunStatus) {
+	if r.Recorder == nil {
+		return
+	}
+
+	if original.StartedAt == nil && desired.StartedAt != nil {
+		r.Recorder.Event(run, corev1.EventTypeNormal, workflowRunEventStarted, fmt.Sprintf("FunctionWorkflowRun started workflow %q.", run.Spec.WorkflowRef.Name))
+	}
+
+	originalNodes := workflowRunNodeStatusMap(original.Nodes)
+	for _, node := range desired.Nodes {
+		previous := originalNodes[node.Name]
+		if previous.FunctionJobRef == nil && node.FunctionJobRef != nil {
+			r.Recorder.Event(run, corev1.EventTypeNormal, workflowRunEventNodeFunctionJobCreate, fmt.Sprintf("Node %q created FunctionJob %q.", node.Name, node.FunctionJobRef.Name))
+		}
+		if previous.Phase != functionsv1alpha1.FunctionWorkflowNodePhaseComplete && node.Phase == functionsv1alpha1.FunctionWorkflowNodePhaseComplete {
+			r.Recorder.Event(run, corev1.EventTypeNormal, workflowRunEventNodeComplete, fmt.Sprintf("Node %q completed.", node.Name))
+		}
+		if previous.Phase != functionsv1alpha1.FunctionWorkflowNodePhaseFailed && node.Phase == functionsv1alpha1.FunctionWorkflowNodePhaseFailed {
+			message := fmt.Sprintf("Node %q failed.", node.Name)
+			if node.Message != "" {
+				message = fmt.Sprintf("Node %q failed: %s", node.Name, node.Message)
+			}
+			r.Recorder.Event(run, corev1.EventTypeWarning, workflowRunEventNodeFailed, message)
+		}
+		if previous.Phase != functionsv1alpha1.FunctionWorkflowNodePhaseSkipped && node.Phase == functionsv1alpha1.FunctionWorkflowNodePhaseSkipped {
+			message := fmt.Sprintf("Node %q skipped because a dependency did not complete successfully.", node.Name)
+			if node.Message != "" {
+				message = fmt.Sprintf("Node %q skipped: %s", node.Name, node.Message)
+			}
+			r.Recorder.Event(run, corev1.EventTypeWarning, workflowRunEventNodeSkipped, message)
+		}
+	}
+
+	if original.Phase != functionsv1alpha1.FunctionWorkflowRunPhaseComplete && desired.Phase == functionsv1alpha1.FunctionWorkflowRunPhaseComplete {
+		r.Recorder.Event(run, corev1.EventTypeNormal, workflowRunEventComplete, fmt.Sprintf("FunctionWorkflowRun completed: %d node(s) completed successfully.", desired.CompletedNodes))
+	}
+	if original.Phase != functionsv1alpha1.FunctionWorkflowRunPhaseFailed && desired.Phase == functionsv1alpha1.FunctionWorkflowRunPhaseFailed {
+		message := "FunctionWorkflowRun failed."
+		if condition := workflowRunConditionByType(desired.Conditions, functionsv1alpha1.FunctionWorkflowRunConditionFailed); condition != nil && condition.Message != "" {
+			message = "FunctionWorkflowRun failed: " + condition.Message
+		}
+		r.Recorder.Event(run, corev1.EventTypeWarning, workflowRunEventFailed, message)
+	}
+}
+
+func workflowRunNodeStatusMap(nodes []functionsv1alpha1.FunctionWorkflowRunNodeStatus) map[string]functionsv1alpha1.FunctionWorkflowRunNodeStatus {
+	byName := make(map[string]functionsv1alpha1.FunctionWorkflowRunNodeStatus, len(nodes))
+	for _, node := range nodes {
+		byName[node.Name] = node
+	}
+	return byName
+}
+
+func workflowRunConditionByType(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }
 
 type workflowValidationError struct {

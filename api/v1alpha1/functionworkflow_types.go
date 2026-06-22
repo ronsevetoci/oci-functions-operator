@@ -166,6 +166,22 @@ type FunctionWorkflowRunStatus struct {
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
+	// NodeCount is the total number of nodes observed from the workflow template.
+	// +optional
+	NodeCount int32 `json:"nodeCount,omitempty"`
+
+	// CompletedNodes is the number of nodes that completed successfully.
+	// +optional
+	CompletedNodes int32 `json:"completedNodes,omitempty"`
+
+	// FailedNodes is the number of nodes that failed.
+	// +optional
+	FailedNodes int32 `json:"failedNodes,omitempty"`
+
+	// SkippedNodes is the number of nodes skipped because dependencies did not complete successfully.
+	// +optional
+	SkippedNodes int32 `json:"skippedNodes,omitempty"`
+
 	// Nodes records per-node execution state.
 	// +optional
 	// +listType=map
@@ -210,8 +226,10 @@ type FunctionWorkflowRunNodeStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,categories={oci,functions}
-// +kubebuilder:printcolumn:name="Workflow",type=string,JSONPath=".spec.workflowRef.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Nodes",type=integer,JSONPath=".status.nodeCount"
+// +kubebuilder:printcolumn:name="Complete",type=integer,JSONPath=".status.completedNodes"
+// +kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=".status.failedNodes"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // FunctionWorkflowRun is the Schema for one execution of a FunctionWorkflow.
 type FunctionWorkflowRun struct {

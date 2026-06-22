@@ -88,8 +88,9 @@ func main() {
 	}
 
 	if err = (&controller.FunctionWorkflowRunReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("functionworkflowrun-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FunctionWorkflowRun")
 		os.Exit(1)

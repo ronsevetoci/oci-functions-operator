@@ -18,12 +18,18 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.workflowRef.name
-      name: Workflow
-      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.nodeCount
+      name: Nodes
+      type: integer
+    - jsonPath: .status.completedNodes
+      name: Complete
+      type: integer
+    - jsonPath: .status.failedNodes
+      name: Failed
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -69,6 +75,11 @@ spec:
           status:
             description: FunctionWorkflowRunStatus defines the observed state of FunctionWorkflowRun.
             properties:
+              completedNodes:
+                description: CompletedNodes is the number of nodes that completed
+                  successfully.
+                format: int32
+                type: integer
               completionTime:
                 description: CompletionTime is when the workflow run reached a terminal
                   phase.
@@ -134,6 +145,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              failedNodes:
+                description: FailedNodes is the number of nodes that failed.
+                format: int32
+                type: integer
+              nodeCount:
+                description: NodeCount is the total number of nodes observed from
+                  the workflow template.
+                format: int32
+                type: integer
               nodes:
                 description: Nodes records per-node execution state.
                 items:
@@ -205,6 +225,11 @@ spec:
                 - Complete
                 - Failed
                 type: string
+              skippedNodes:
+                description: SkippedNodes is the number of nodes skipped because dependencies
+                  did not complete successfully.
+                format: int32
+                type: integer
               startedAt:
                 description: StartedAt is when the controller first observed the workflow
                   run.
