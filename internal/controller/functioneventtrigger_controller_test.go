@@ -101,6 +101,36 @@ func TestFunctionEventTriggerFunctionEventRouteDoesNotCreateOCIRule(t *testing.T
 	}
 }
 
+func TestFunctionEventTriggerOCITriggerMissingRuleFieldsFailsClearly(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	trigger.Spec.CompartmentID = ""
+	trigger.Spec.DisplayName = ""
+	manager := &fakeEventRuleManager{}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(function, trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+
+	if manager.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 for invalid OCI Events trigger", manager.createCalls)
+	}
+	updated := getEventTrigger(t, ctx, k8sClient, trigger)
+	if updated.Status.Phase != functionsv1alpha1.FunctionEventTriggerPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "spec.compartmentId") || !strings.Contains(updated.Status.Message, "spec.displayName") {
+		t.Fatalf("message = %q, want missing OCI Events fields", updated.Status.Message)
+	}
+}
+
 func TestFunctionEventTriggerRejectsMixedFunctionEventAndOCIEventTypes(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)

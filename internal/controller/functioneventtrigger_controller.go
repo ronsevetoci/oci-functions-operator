@@ -111,6 +111,16 @@ func (r *FunctionEventTriggerReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, updateErr
 	}
 
+	if message := validateOCIEventTriggerRequiredFields(&trigger); message != "" {
+		now := metav1.Now()
+		desiredObject := trigger.DeepCopy()
+		desiredObject.Status.ObservedGeneration = trigger.Generation
+		markFunctionEventTriggerError(desiredObject, now, "MissingOCIEventFields", message)
+		patched, updateErr := r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status, false)
+		logger.V(1).Info("FunctionEventTrigger status patch evaluated", "statusPatched", patched, "statusPhase", desiredObject.Status.Phase, "statusMessageHash", hashString(desiredObject.Status.Message))
+		return ctrl.Result{}, updateErr
+	}
+
 	if !controllerutil.ContainsFinalizer(&trigger, functionEventTriggerFinalizer) {
 		controllerutil.AddFinalizer(&trigger, functionEventTriggerFinalizer)
 		if err := r.Update(ctx, &trigger); err != nil {
@@ -723,6 +733,20 @@ func functionEventTriggerHasIgnoredOCIFields(trigger *functionsv1alpha1.Function
 	return strings.TrimSpace(trigger.Spec.CompartmentID) != "" ||
 		strings.TrimSpace(trigger.Spec.DisplayName) != "" ||
 		trigger.Spec.DeletionPolicy == functionsv1alpha1.FunctionEventTriggerDeletionPolicyRetain
+}
+
+func validateOCIEventTriggerRequiredFields(trigger *functionsv1alpha1.FunctionEventTrigger) string {
+	missing := []string{}
+	if strings.TrimSpace(trigger.Spec.CompartmentID) == "" {
+		missing = append(missing, "spec.compartmentId")
+	}
+	if strings.TrimSpace(trigger.Spec.DisplayName) == "" {
+		missing = append(missing, "spec.displayName")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("OCI Events triggers require %s. FunctionEvent-only triggers can omit these fields by using only functionevent.* condition.eventType values.", strings.Join(missing, " and "))
 }
 
 func setFunctionEventTriggerConditions(trigger *functionsv1alpha1.FunctionEventTrigger, now metav1.Time, functionResolved, ruleReady conditionState) {

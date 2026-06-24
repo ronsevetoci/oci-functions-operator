@@ -75,8 +75,10 @@ spec:
                     description: EventType matches OCI eventType values, for example
                       com.oraclecloud.objectstorage.createobject.
                     items:
+                      maxLength: 256
                       minLength: 1
                       type: string
+                    maxItems: 32
                     minItems: 1
                     type: array
                     x-kubernetes-list-type: set
@@ -131,16 +133,6 @@ spec:
             - condition
             - functionRef
             type: object
-            x-kubernetes-validations:
-            - message: condition.eventType cannot mix functionevent.* and OCI event
-                types
-              rule: '!has(self.condition.eventType) || self.condition.eventType.all(e,
-                e.startsWith(''functionevent.'')) || self.condition.eventType.all(e,
-                !e.startsWith(''functionevent.''))'
-            - message: OCI Events triggers require spec.compartmentId and spec.displayName;
-                FunctionEvent-only triggers do not
-              rule: (has(self.condition.eventType) && self.condition.eventType.all(e,
-                e.startsWith('functionevent.'))) || (has(self.compartmentId) && has(self.displayName))
           status:
             description: FunctionEventTriggerStatus defines the observed state of
               FunctionEventTrigger.
