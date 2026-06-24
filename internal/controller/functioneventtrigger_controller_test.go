@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -68,6 +69,64 @@ func TestFunctionEventTriggerCreatesRuleAfterFunctionReady(t *testing.T) {
 		t.Fatalf("RuleReady condition = %#v, want true", condition)
 	}
 	assertEventContains(t, drainEvents(recorder), "Normal RuleCreated")
+}
+
+func TestFunctionEventTriggerFunctionEventRouteDoesNotCreateOCIRule(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	trigger := orderCreatedFunctionEventTrigger("order-created-trigger", "default", "managed-hello")
+	manager := &fakeEventRuleManager{}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+
+	if manager.createCalls != 0 || len(manager.desired) != 0 {
+		t.Fatalf("OCI rule calls = create:%d desired:%d, want none for FunctionEvent route", manager.createCalls, len(manager.desired))
+	}
+	updated := getEventTrigger(t, ctx, k8sClient, trigger)
+	if updated.Status.Phase != functionsv1alpha1.FunctionEventTriggerPhaseReady {
+		t.Fatalf("phase = %q, want Ready", updated.Status.Phase)
+	}
+	if updated.Status.RuleID != "" {
+		t.Fatalf("ruleId = %q, want empty for FunctionEvent route", updated.Status.RuleID)
+	}
+	if controllerutil.ContainsFinalizer(&updated, functionEventTriggerFinalizer) {
+		t.Fatalf("finalizers = %#v, want no OCI Events finalizer for FunctionEvent route", updated.Finalizers)
+	}
+}
+
+func TestFunctionEventTriggerRejectsMixedFunctionEventAndOCIEventTypes(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	trigger := orderCreatedFunctionEventTrigger("mixed-trigger", "default", "managed-hello")
+	trigger.Spec.Condition.EventType = append(trigger.Spec.Condition.EventType, "com.oraclecloud.objectstorage.createobject")
+	manager := &fakeEventRuleManager{}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+
+	if manager.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 for mixed trigger", manager.createCalls)
+	}
+	updated := getEventTrigger(t, ctx, k8sClient, trigger)
+	if updated.Status.Phase != functionsv1alpha1.FunctionEventTriggerPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "cannot mix") {
+		t.Fatalf("message = %q, want mixed event type guidance", updated.Status.Message)
+	}
 }
 
 func TestFunctionEventTriggerWaitsWhenFunctionNotFound(t *testing.T) {

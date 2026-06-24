@@ -37,19 +37,25 @@ const (
 	FunctionEventTriggerDeletionPolicyRetain FunctionEventTriggerDeletionPolicy = "Retain"
 )
 
-// FunctionEventTriggerSpec defines an OCI Events rule that invokes an OCI Function.
+// FunctionEventTriggerSpec defines an OCI Events rule or FunctionEvent route that invokes an OCI Function.
+// +kubebuilder:validation:XValidation:rule="!has(self.condition.eventType) || self.condition.eventType.all(e, e.startsWith('functionevent.')) || self.condition.eventType.all(e, !e.startsWith('functionevent.'))",message="condition.eventType cannot mix functionevent.* and OCI event types"
+// +kubebuilder:validation:XValidation:rule="(has(self.condition.eventType) && self.condition.eventType.all(e, e.startsWith('functionevent.'))) || (has(self.compartmentId) && has(self.displayName))",message="OCI Events triggers require spec.compartmentId and spec.displayName; FunctionEvent-only triggers do not"
 type FunctionEventTriggerSpec struct {
 	// FunctionRef references a Function in the same namespace.
 	FunctionRef FunctionReference `json:"functionRef"`
 
 	// CompartmentID is the compartment OCID where the OCI Events rule is created.
+	// Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
+	// +optional
 	// +kubebuilder:validation:Pattern=^ocid1\.compartment\..+
-	CompartmentID string `json:"compartmentId"`
+	CompartmentID string `json:"compartmentId,omitempty"`
 
 	// DisplayName is the OCI Events rule display name.
+	// Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	DisplayName string `json:"displayName"`
+	DisplayName string `json:"displayName,omitempty"`
 
 	// Description describes the OCI Events rule.
 	// +optional

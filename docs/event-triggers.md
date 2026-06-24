@@ -1,12 +1,19 @@
 # Function Event Triggers
 
-`FunctionEventTrigger` declaratively manages an OCI Events Rule that invokes an OCI Function referenced by this operator's `Function` CRD.
+`FunctionEventTrigger` declaratively routes an event type to an OCI Function referenced by this operator's `Function` CRD.
 
-This is OCI Events to OCI Functions invocation. It is not a Kubernetes watch trigger, not `FunctionJob` fanout, and not DAG/workflow orchestration.
+There are two trigger backends:
+
+- OCI service event types such as `com.oraclecloud.objectstorage.createobject` are backed by OCI Events Rules.
+- Kubernetes-native event types with the reserved `functionevent.` prefix are backed by `FunctionEvent` CRDs and invoke directly through the operator.
+
+Do not mix OCI event types and `functionevent.*` values in one trigger.
 
 ## Resource Model
 
-Create or reference a `Function` first. The trigger controller waits until that `Function` has:
+Create or reference a `Function` first.
+
+For OCI Events triggers, the trigger controller waits until that `Function` has:
 
 - `Ready=True`
 - `status.functionId` populated
@@ -35,6 +42,24 @@ spec:
 ```
 
 The controller stores the OCI Events Rule OCID in `status.ruleId`.
+
+For Kubernetes-native FunctionEvent triggers, omit OCI Events rule fields:
+
+```yaml
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionEventTrigger
+metadata:
+  name: order-created-trigger
+spec:
+  functionRef:
+    name: managed-hello
+  isEnabled: true
+  condition:
+    eventType:
+    - functionevent.order.created
+```
+
+No OCI Events Rule is created for `functionevent.*` triggers. `compartmentId`, `displayName`, and `deletionPolicy` are not required for FunctionEvent-only triggers. See [Function Events](function-events.md) for creating Kubernetes-native event objects.
 
 `condition.eventType` is a Kubernetes list field. For the common single-value case, the controller renders one item as the scalar OCI Events condition value:
 
@@ -65,8 +90,9 @@ condition:
 
 ## Deletion Policy
 
-- `deletionPolicy: Delete` is the default. Deleting the Kubernetes trigger deletes the OCI Events Rule.
+- `deletionPolicy: Delete` is the default for OCI Events triggers. Deleting the Kubernetes trigger deletes the OCI Events Rule.
 - `deletionPolicy: Retain` removes the Kubernetes object but leaves the OCI Events Rule in OCI.
+- FunctionEvent-only triggers do not create OCI Events Rules, so `deletionPolicy` is not used.
 
 ## Run The Sample
 
@@ -98,6 +124,8 @@ object-created-trigger   Ready   ocid1.eventrule.oc1.me-jeddah-1...          man
 ```
 
 ## IAM And Invocation
+
+This IAM section applies to OCI Events-backed triggers with OCI service event types such as `com.oraclecloud.*`. FunctionEvent-only triggers with `functionevent.*` event types do not create OCI Events Rules and do not require `cloudevents-rules` IAM.
 
 The operator workload identity needs permission to inspect compartments at tenancy scope, manage OCI Events rules in the target compartment, and access the Function action target. OCI Events also needs permission to invoke the target Function at delivery time. Keep both sides in mind:
 

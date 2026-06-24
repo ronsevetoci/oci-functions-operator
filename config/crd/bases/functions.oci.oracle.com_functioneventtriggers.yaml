@@ -54,12 +54,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: FunctionEventTriggerSpec defines an OCI Events rule that
-              invokes an OCI Function.
+            description: FunctionEventTriggerSpec defines an OCI Events rule or FunctionEvent
+              route that invokes an OCI Function.
             properties:
               compartmentId:
-                description: CompartmentID is the compartment OCID where the OCI Events
-                  rule is created.
+                description: |-
+                  CompartmentID is the compartment OCID where the OCI Events rule is created.
+                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
                 pattern: ^ocid1\.compartment\..+
                 type: string
               condition:
@@ -104,7 +105,9 @@ spec:
                 maxLength: 400
                 type: string
               displayName:
-                description: DisplayName is the OCI Events rule display name.
+                description: |-
+                  DisplayName is the OCI Events rule display name.
+                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
                 maxLength: 255
                 minLength: 1
                 type: string
@@ -125,11 +128,19 @@ spec:
                   Defaults to true when omitted.
                 type: boolean
             required:
-            - compartmentId
             - condition
-            - displayName
             - functionRef
             type: object
+            x-kubernetes-validations:
+            - message: condition.eventType cannot mix functionevent.* and OCI event
+                types
+              rule: '!has(self.condition.eventType) || self.condition.eventType.all(e,
+                e.startsWith(''functionevent.'')) || self.condition.eventType.all(e,
+                !e.startsWith(''functionevent.''))'
+            - message: OCI Events triggers require spec.compartmentId and spec.displayName;
+                FunctionEvent-only triggers do not
+              rule: (has(self.condition.eventType) && self.condition.eventType.all(e,
+                e.startsWith('functionevent.'))) || (has(self.compartmentId) && has(self.displayName))
           status:
             description: FunctionEventTriggerStatus defines the observed state of
               FunctionEventTrigger.

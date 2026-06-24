@@ -2,11 +2,12 @@
 
 Kubernetes-native management and job-style invocation of OCI Functions from OKE.
 
-The operator adds three namespaced CRDs:
+The operator adds four namespaced CRDs:
 
 - `Function`: references an existing OCI Function or manages an OCI Functions application/function.
 - `FunctionJob`: invokes a referenced `Function`, fans out inline JSON payloads, retries failed invocations, and records aggregate/per-payload status.
-- `FunctionEventTrigger`: manages an OCI Events Rule that invokes a referenced `Function`.
+- `FunctionEventTrigger`: routes OCI Events Rule or Kubernetes-native FunctionEvent event types to a referenced `Function`.
+- `FunctionEvent`: Kubernetes-native event object for direct operator-routed invocation through `functionevent.*` event types.
 
 ## Two Images
 
@@ -21,7 +22,8 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 
 - [Helm install](docs/helm-install.md): recommended OKE installation and upgrade path.
 - [Managed Function demo](docs/managed-function-demo.md): primary OKE walkthrough for managed application/function creation and invocation.
-- [Function event triggers](docs/event-triggers.md): OCI Events Rule to OCI Function trigger setup.
+- [Function events](docs/function-events.md): Kubernetes-native `functionevent.*` events routed directly by the operator.
+- [Function event triggers](docs/event-triggers.md): OCI Events Rule and FunctionEvent trigger setup.
 - [OKE deployment](docs/oke-deployment.md): supported Helm deployment, Workload Identity, IAM, and network setup.
 - [Design overview](docs/design.md): CRDs, controllers, lifecycle, invoker contracts, and limitations.
 - [Local existing Function demo](docs/oci-mode-demo.md): local `OCI_AUTH_MODE=config` path against an already-created OCI Function.
@@ -73,7 +75,7 @@ For OKE managed mode:
 2. Build a Fn-compatible function runtime image and push it to same-region OCIR.
 3. Deploy the operator with Helm. The chart is the supported OKE path and defaults to OCI mode with Workload Identity.
 4. Apply a managed `Function` with `spec.config.region`, `compartmentId`, `applicationName`, `subnetIds`, optional `nsgIds`, and same-region OCIR `image`.
-5. Submit a `FunctionJob` or create a `FunctionEventTrigger` after the `Function` is Ready.
+5. Submit a `FunctionJob`, create a `FunctionEventTrigger`, or emit a `FunctionEvent` after the `Function` is Ready.
 
 See [docs/helm-install.md](docs/helm-install.md) for installation and [docs/managed-function-demo.md](docs/managed-function-demo.md) for the full Function sequence.
 
