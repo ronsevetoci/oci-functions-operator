@@ -1,6 +1,6 @@
 # Helm Install
 
-Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place.
+Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place. The packaged CRDs are `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 
 Use Helm for supported OKE installs and upgrades. Kustomize manifests under `config/` are retained for operator development only. Do not mix Helm and Kustomize resources for the same cluster install.
 
@@ -191,6 +191,9 @@ kubectl auth can-i get functionjobs.functions.oci.oracle.com \
 
 kubectl auth can-i get functioneventtriggers.functions.oci.oracle.com \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i get functionevents.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 ```
 
 ## Troubleshooting
@@ -204,7 +207,7 @@ ImagePullBackOff:
 Missing CRDs:
 
 - Confirm Helm installed the CRDs:
-  `kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com`
+  `kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com`
 - If CRDs were skipped or removed, apply:
   `kubectl apply -f charts/oci-functions-operator/crds/`
 
@@ -215,7 +218,7 @@ Stale CRDs after API changes:
 
 Missing RBAC:
 
-- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, their `status` and `finalizers`, and core `events`.
+- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, their `status` and needed `finalizers`, and core `events`.
 - Re-run the Helm upgrade if the ClusterRole drifted.
 - Do not repair a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
 

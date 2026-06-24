@@ -54,12 +54,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: FunctionEventTriggerSpec defines an OCI Events rule that
-              invokes an OCI Function.
+            description: FunctionEventTriggerSpec defines an OCI Events rule or FunctionEvent
+              route that invokes an OCI Function.
             properties:
               compartmentId:
-                description: CompartmentID is the compartment OCID where the OCI Events
-                  rule is created.
+                description: |-
+                  CompartmentID is the compartment OCID where the OCI Events rule is created.
+                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
                 pattern: ^ocid1\.compartment\..+
                 type: string
               condition:
@@ -74,8 +75,10 @@ spec:
                     description: EventType matches OCI eventType values, for example
                       com.oraclecloud.objectstorage.createobject.
                     items:
+                      maxLength: 256
                       minLength: 1
                       type: string
+                    maxItems: 32
                     minItems: 1
                     type: array
                     x-kubernetes-list-type: set
@@ -104,7 +107,9 @@ spec:
                 maxLength: 400
                 type: string
               displayName:
-                description: DisplayName is the OCI Events rule display name.
+                description: |-
+                  DisplayName is the OCI Events rule display name.
+                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
                 maxLength: 255
                 minLength: 1
                 type: string
@@ -125,9 +130,7 @@ spec:
                   Defaults to true when omitted.
                 type: boolean
             required:
-            - compartmentId
             - condition
-            - displayName
             - functionRef
             type: object
           status:

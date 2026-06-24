@@ -14,11 +14,12 @@ This is intentionally not modeled as Pods or Kubernetes Jobs. OCI Functions are 
 
 ## MVP Scope
 
-The operator currently exposes three namespaced resources in `functions.oci.oracle.com/v1alpha1`:
+The operator currently exposes four namespaced resources in `functions.oci.oracle.com/v1alpha1`:
 
 - `Function`: either references an existing OCI Function by `spec.functionId` and `spec.invokeEndpoint`, or manages an OCI Functions application/function from desired config.
 - `FunctionJob`: references a `Function`, carries inline JSON payloads, controls per-reconcile parallelism, applies retry limits, and records status aggregation.
-- `FunctionEventTrigger`: manages an OCI Events Rule that invokes a referenced `Function`.
+- `FunctionEventTrigger`: routes an OCI Events Rule event type or Kubernetes-native `functionevent.*` event type to a referenced `Function`.
+- `FunctionEvent`: Kubernetes-native event object matched against `FunctionEventTrigger.spec.condition.eventType`.
 
 Implemented invoker modes:
 
@@ -29,7 +30,7 @@ Implemented invoker modes:
 
 - Cron scheduling.
 - DAG/workflow orchestration.
-- Kubernetes watch triggers.
+- Kubernetes resource watch triggers.
 - Native Kubernetes Job compatibility.
 - Pod templates, volumes, sidecars, init containers, GPUs, or privileged execution.
 - Image publishing, function source builds, or deployment packaging.
@@ -38,11 +39,12 @@ Implemented invoker modes:
 
 ## Architecture
 
-The controller manager runs three reconcilers:
+The controller manager runs four reconcilers:
 
 - `FunctionReconciler` resolves a `Function` into a ready, pending, or error status. Existing function references validate required fields; managed functions ensure an OCI Functions application and function.
 - `FunctionJobReconciler` resolves the referenced `Function`, initializes per-payload status, invokes runnable payloads through `invoker.Interface`, aggregates status, and emits events.
-- `FunctionEventTriggerReconciler` waits for the referenced `Function` to become Ready with `status.functionId`, then creates or updates an OCI Events Rule with a FAAS action targeting that Function.
+- `FunctionEventTriggerReconciler` creates or updates OCI Events Rules for OCI event types and treats `functionevent.*` triggers as Kubernetes-native routes.
+- `FunctionEventReconciler` matches `FunctionEvent.spec.eventType` against same-namespace FunctionEventTriggers and invokes the referenced Functions through `invoker.Interface`.
 
 OCI SDK usage is isolated under `internal/invoker`, `internal/lifecycle`, and `internal/eventtrigger`. Controllers depend only on small internal interfaces:
 

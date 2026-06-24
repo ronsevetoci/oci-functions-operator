@@ -37,19 +37,25 @@ const (
 	FunctionEventTriggerDeletionPolicyRetain FunctionEventTriggerDeletionPolicy = "Retain"
 )
 
-// FunctionEventTriggerSpec defines an OCI Events rule that invokes an OCI Function.
+// FunctionEventTriggerSpec defines an OCI Events rule or FunctionEvent route that invokes an OCI Function.
 type FunctionEventTriggerSpec struct {
 	// FunctionRef references a Function in the same namespace.
 	FunctionRef FunctionReference `json:"functionRef"`
 
 	// CompartmentID is the compartment OCID where the OCI Events rule is created.
+	// Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
+	// +optional
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Pattern=^ocid1\.compartment\..+
-	CompartmentID string `json:"compartmentId"`
+	CompartmentID string `json:"compartmentId,omitempty"`
 
 	// DisplayName is the OCI Events rule display name.
+	// Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
+	// +optional
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	DisplayName string `json:"displayName"`
+	DisplayName string `json:"displayName,omitempty"`
 
 	// Description describes the OCI Events rule.
 	// +optional
@@ -83,7 +89,9 @@ type FunctionEventCondition struct {
 	// EventType matches OCI eventType values, for example com.oraclecloud.objectstorage.createobject.
 	// +optional
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	EventType []string `json:"eventType,omitempty"`
 

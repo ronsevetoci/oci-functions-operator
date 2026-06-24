@@ -4,28 +4,28 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: functioneventtriggers.functions.oci.oracle.com
+  name: functionevents.functions.oci.oracle.com
 spec:
   group: functions.oci.oracle.com
   names:
     categories:
     - oci
     - functions
-    kind: FunctionEventTrigger
-    listKind: FunctionEventTriggerList
-    plural: functioneventtriggers
-    singular: functioneventtrigger
+    kind: FunctionEvent
+    listKind: FunctionEventList
+    plural: functionevents
+    singular: functionevent
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.ruleId
-      name: Rule ID
+    - jsonPath: .spec.eventType
+      name: Event Type
       type: string
-    - jsonPath: .spec.functionRef.name
-      name: Function
+    - jsonPath: .status.matchedTriggers
+      name: Matched
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,8 +33,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: FunctionEventTrigger is the Schema for OCI Events rules that
-          invoke OCI Functions.
+        description: FunctionEvent is the Schema for Kubernetes-native events routed
+          to Functions.
         properties:
           apiVersion:
             description: |-
@@ -54,88 +54,45 @@ spec:
           metadata:
             type: object
           spec:
-            description: FunctionEventTriggerSpec defines an OCI Events rule or FunctionEvent
-              route that invokes an OCI Function.
+            description: FunctionEventSpec defines a Kubernetes-native event to route
+              to matching FunctionEventTriggers.
             properties:
-              compartmentId:
-                description: |-
-                  CompartmentID is the compartment OCID where the OCI Events rule is created.
-                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
-                pattern: ^ocid1\.compartment\..+
-                type: string
-              condition:
-                description: Condition is the OCI Events matching condition.
-                properties:
-                  data:
-                    description: Data matches OCI event data fields using the same
-                      nested shape as the event payload.
-                    type: object
-                    x-kubernetes-preserve-unknown-fields: true
-                  eventType:
-                    description: EventType matches OCI eventType values, for example
-                      com.oraclecloud.objectstorage.createobject.
-                    items:
-                      maxLength: 256
-                      minLength: 1
-                      type: string
-                    maxItems: 32
-                    minItems: 1
-                    type: array
-                    x-kubernetes-list-type: set
-                  rawJson:
-                    description: RawJSON is the exact OCI Events rule condition JSON
-                      string.
-                    minLength: 2
-                    type: string
-                type: object
-                x-kubernetes-validations:
-                - message: condition must set rawJson or at least one structured field
-                  rule: has(self.rawJson) || has(self.eventType) || has(self.data)
-                - message: condition.rawJson is mutually exclusive with structured
-                    condition fields
-                  rule: '!has(self.rawJson) || (!has(self.eventType) && !has(self.data))'
-              deletionPolicy:
-                default: Delete
-                description: DeletionPolicy controls whether deleting this Kubernetes
-                  object deletes the OCI Events rule.
-                enum:
-                - Delete
-                - Retain
-                type: string
-              description:
-                description: Description describes the OCI Events rule.
-                maxLength: 400
-                type: string
-              displayName:
-                description: |-
-                  DisplayName is the OCI Events rule display name.
-                  Required for OCI Events rule triggers. Omit for FunctionEvent-only triggers.
-                maxLength: 255
+              eventType:
+                description: EventType is the Kubernetes-native event type. It must
+                  use the reserved functionevent. prefix.
                 minLength: 1
+                pattern: ^functionevent\..+
                 type: string
-              functionRef:
-                description: FunctionRef references a Function in the same namespace.
-                properties:
-                  name:
-                    description: Name is the referenced Function name.
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
-              isEnabled:
-                default: true
+              id:
                 description: |-
-                  IsEnabled controls whether the OCI Events rule and Function action are enabled.
-                  Defaults to true when omitted.
-                type: boolean
+                  ID is an optional user-provided idempotency key carried in the invocation payload.
+                  When omitted, the controller uses metadata.uid in the invocation envelope.
+                type: string
+              payload:
+                description: Payload is the event payload passed to the invoked Function
+                  inside a FunctionEvent envelope.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              source:
+                description: Source identifies the application or component that emitted
+                  the event.
+                type: string
+              subject:
+                description: Subject identifies the resource or business object the
+                  event is about.
+                type: string
+              ttlSecondsAfterProcessed:
+                description: TTLSecondsAfterProcessed deletes the FunctionEvent this
+                  many seconds after it reaches Processed.
+                format: int32
+                minimum: 0
+                type: integer
             required:
-            - condition
-            - functionRef
+            - eventType
             type: object
           status:
-            description: FunctionEventTriggerStatus defines the observed state of
-              FunctionEventTrigger.
+            description: FunctionEventStatus defines observed routing and invocation
+              state.
             properties:
               conditions:
                 description: Conditions contain detailed state transitions.
@@ -197,11 +154,53 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastSyncTime:
-                description: LastSyncTime is the last time the controller updated
-                  observed status.
-                format: date-time
-                type: string
+              invocations:
+                description: Invocations records one invocation per matched trigger.
+                items:
+                  description: FunctionEventInvocationStatus records one matched trigger
+                    invocation.
+                  properties:
+                    attempts:
+                      description: Attempts is the number of invocation attempts made.
+                      format: int32
+                      type: integer
+                    functionName:
+                      description: FunctionName is the referenced Function name for
+                        the matched trigger.
+                      type: string
+                    lastAttemptTime:
+                      description: LastAttemptTime is the most recent invocation attempt
+                        time.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is the current invocation summary or last
+                        stable error.
+                      type: string
+                    phase:
+                      description: Phase is the observed invocation phase.
+                      enum:
+                      - Pending
+                      - Succeeded
+                      - Failed
+                      type: string
+                    triggerName:
+                      description: TriggerName is the matched FunctionEventTrigger
+                        name.
+                      type: string
+                  required:
+                  - triggerName
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - triggerName
+                x-kubernetes-list-type: map
+              matchedTriggers:
+                description: MatchedTriggers lists matching FunctionEventTrigger names.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               message:
                 description: Message is a short human-readable status summary.
                 type: string
@@ -214,11 +213,9 @@ spec:
                 description: Phase is a compact state summary for kubectl output.
                 enum:
                 - Pending
-                - Ready
-                - Error
-                type: string
-              ruleId:
-                description: RuleID is the OCI Events rule OCID.
+                - Processing
+                - Processed
+                - Failed
                 type: string
             type: object
         type: object

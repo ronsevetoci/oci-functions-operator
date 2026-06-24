@@ -92,6 +92,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.FunctionEventReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Invoker:  selectedInvoker,
+		Recorder: mgr.GetEventRecorderFor("functionevent-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "FunctionEvent")
+		os.Exit(1)
+	}
+
 	if eventTriggerManager != nil {
 		if err = (&controller.FunctionEventTriggerReconciler{
 			Client:   mgr.GetClient(),

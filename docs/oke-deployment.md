@@ -6,9 +6,9 @@ Kustomize manifests under `config/` are retained for Kubebuilder-generated resou
 
 ## What Gets Installed
 
-- CRDs for `Function`, `FunctionJob`, and `FunctionEventTrigger`.
+- CRDs for `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 - A controller manager Deployment in `oci-functions-operator-system`.
-- RBAC for watching `Function`, `FunctionJob`, and `FunctionEventTrigger` resources and writing status/events.
+- RBAC for watching `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent` resources and writing status/events.
 - OCI mode configured for OKE Workload Identity.
 
 ## Prerequisites
@@ -45,7 +45,7 @@ Confirm the deployment and CRDs:
 
 ```sh
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
-kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com
+kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com
 ```
 
 ## OKE Workload Identity Auth
@@ -360,7 +360,7 @@ Symptoms:
 
 Checks:
 
-- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, status/finalizers, and core `events`.
+- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, status/finalizers, and core `events`.
 - Re-run `helm upgrade` if the ClusterRole drifted.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
 - Do not patch a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
@@ -371,4 +371,4 @@ Checks:
 
 ## Current MVP Boundary
 
-This deployment supports existing Function references, managed application/function reconciliation, `FunctionJob` invocation, and OCI Events rule triggers through `FunctionEventTrigger`. Image build/push workflows, Function deletion, schedules, Kubernetes watch triggers, and Function deployment packaging remain out of scope.
+This deployment supports existing Function references, managed application/function reconciliation, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. Image build/push workflows, Function deletion, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.

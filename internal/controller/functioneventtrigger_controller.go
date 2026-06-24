@@ -83,6 +83,44 @@ func (r *FunctionEventTriggerReconciler) Reconcile(ctx context.Context, req ctrl
 		return r.reconcileDelete(ctx, &trigger)
 	}
 
+	triggerMode := classifyFunctionEventTrigger(&trigger)
+	switch triggerMode {
+	case functionEventTriggerModeMixed:
+		now := metav1.Now()
+		desiredObject := trigger.DeepCopy()
+		desiredObject.Status.ObservedGeneration = trigger.Generation
+		message := "condition.eventType cannot mix functionevent.* and OCI event types."
+		markFunctionEventTriggerError(desiredObject, now, "MixedEventTypes", message)
+		patched, updateErr := r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status, false)
+		logger.V(1).Info("FunctionEventTrigger status patch evaluated", "statusPatched", patched, "statusPhase", desiredObject.Status.Phase, "statusMessageHash", hashString(desiredObject.Status.Message))
+		return ctrl.Result{}, updateErr
+	case functionEventTriggerModeFunctionEvent:
+		if controllerutil.ContainsFinalizer(&trigger, functionEventTriggerFinalizer) {
+			controllerutil.RemoveFinalizer(&trigger, functionEventTriggerFinalizer)
+			if err := r.Update(ctx, &trigger); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+		now := metav1.Now()
+		desiredObject := trigger.DeepCopy()
+		desiredObject.Status.ObservedGeneration = trigger.Generation
+		markFunctionEventTriggerRouteReady(desiredObject, now)
+		patched, updateErr := r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status, false)
+		logger.V(1).Info("FunctionEventTrigger status patch evaluated", "statusPatched", patched, "statusPhase", desiredObject.Status.Phase, "statusMessageHash", hashString(desiredObject.Status.Message))
+		return ctrl.Result{}, updateErr
+	}
+
+	if message := validateOCIEventTriggerRequiredFields(&trigger); message != "" {
+		now := metav1.Now()
+		desiredObject := trigger.DeepCopy()
+		desiredObject.Status.ObservedGeneration = trigger.Generation
+		markFunctionEventTriggerError(desiredObject, now, "MissingOCIEventFields", message)
+		patched, updateErr := r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status, false)
+		logger.V(1).Info("FunctionEventTrigger status patch evaluated", "statusPatched", patched, "statusPhase", desiredObject.Status.Phase, "statusMessageHash", hashString(desiredObject.Status.Message))
+		return ctrl.Result{}, updateErr
+	}
+
 	if !controllerutil.ContainsFinalizer(&trigger, functionEventTriggerFinalizer) {
 		controllerutil.AddFinalizer(&trigger, functionEventTriggerFinalizer)
 		if err := r.Update(ctx, &trigger); err != nil {
@@ -585,6 +623,7 @@ func sanitizeOCIErrorText(value string) string {
 		line = removeInlineOCIErrorField(line, "Opc request id:")
 		line = removeInlineOCIErrorField(line, "Opc-Request-Id:")
 		line = removeInlineOCIErrorField(line, "opc-request-id:")
+		line = removeInlineOCIErrorField(line, "opc-request-id=")
 		line = removeInlineOCIErrorField(line, "request id:")
 		line = removeInlineOCIErrorField(line, "ociRequestId=")
 		line = strings.TrimSpace(line)
@@ -674,6 +713,40 @@ func markFunctionEventTriggerError(trigger *functionsv1alpha1.FunctionEventTrigg
 		conditionState{Status: metav1.ConditionUnknown, Reason: reason, Message: "Function resolution did not complete."},
 		conditionState{Status: metav1.ConditionFalse, Reason: reason, Message: message},
 	)
+}
+
+func markFunctionEventTriggerRouteReady(trigger *functionsv1alpha1.FunctionEventTrigger, now metav1.Time) {
+	message := "FunctionEventTrigger routes Kubernetes FunctionEvent objects."
+	if functionEventTriggerHasIgnoredOCIFields(trigger) {
+		message = "FunctionEventTrigger routes Kubernetes FunctionEvent objects; OCI Events rule fields are ignored for functionevent.* routes."
+	}
+	trigger.Status.Phase = functionsv1alpha1.FunctionEventTriggerPhaseReady
+	trigger.Status.RuleID = ""
+	trigger.Status.Message = message
+	setFunctionEventTriggerConditions(trigger, now,
+		conditionState{Status: metav1.ConditionUnknown, Reason: "FunctionEventRoute", Message: "Function readiness is checked when matching FunctionEvents are processed."},
+		conditionState{Status: metav1.ConditionTrue, Reason: "FunctionEventRouteReady", Message: message},
+	)
+}
+
+func functionEventTriggerHasIgnoredOCIFields(trigger *functionsv1alpha1.FunctionEventTrigger) bool {
+	return strings.TrimSpace(trigger.Spec.CompartmentID) != "" ||
+		strings.TrimSpace(trigger.Spec.DisplayName) != "" ||
+		trigger.Spec.DeletionPolicy == functionsv1alpha1.FunctionEventTriggerDeletionPolicyRetain
+}
+
+func validateOCIEventTriggerRequiredFields(trigger *functionsv1alpha1.FunctionEventTrigger) string {
+	missing := []string{}
+	if strings.TrimSpace(trigger.Spec.CompartmentID) == "" {
+		missing = append(missing, "spec.compartmentId")
+	}
+	if strings.TrimSpace(trigger.Spec.DisplayName) == "" {
+		missing = append(missing, "spec.displayName")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("OCI Events triggers require %s. FunctionEvent-only triggers can omit these fields by using only functionevent.* condition.eventType values.", strings.Join(missing, " and "))
 }
 
 func setFunctionEventTriggerConditions(trigger *functionsv1alpha1.FunctionEventTrigger, now metav1.Time, functionResolved, ruleReady conditionState) {
