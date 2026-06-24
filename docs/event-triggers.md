@@ -42,7 +42,7 @@ The controller stores the OCI Events Rule OCID in `status.ruleId`.
 {"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":"my-bucket"}}}
 ```
 
-Structured `condition.data` also renders single-item arrays as scalar values for compatibility with OCI Events. Multiple event types or multiple values for one data attribute are rejected with `InvalidCondition`; create separate `FunctionEventTrigger` resources for multiple values.
+Structured `condition.data` also renders single-item arrays as scalar values for compatibility with OCI Events. Multiple event types or multiple values for one data attribute are preserved as arrays, which OCI Events documents as matching if any value in the array matches the event.
 
 ## Raw Conditions
 
@@ -61,7 +61,7 @@ condition:
     }
 ```
 
-`rawJson` is mutually exclusive with `eventType` and `data`. It must already be valid OCI Events condition JSON, so use scalar values rather than arrays for single event types or data attributes.
+`rawJson` is mutually exclusive with `eventType` and `data`. It must already be valid OCI Events condition JSON. Use scalar values for single event types or data attributes, and arrays only when you intentionally want an any-of match across multiple values.
 
 ## Deletion Policy
 
@@ -99,31 +99,35 @@ object-created-trigger   Ready   ocid1.eventrule.oc1.me-jeddah-1...          man
 
 ## IAM And Invocation
 
-The operator workload identity needs permission to manage OCI Events rules in the target compartment. OCI Events also needs permission to invoke the target Function. Keep both sides in mind:
+The operator workload identity needs permission to inspect compartments at tenancy scope, manage OCI Events rules in the target compartment, and access the Function action target. OCI Events also needs permission to invoke the target Function at delivery time. Keep both sides in mind:
 
-- Operator workload: manage Events rules.
+- Operator workload: inspect compartments, manage Events rules, and access the Function action target.
 - Events rule principal: invoke the Function action target.
+
+Oracle documents `EVENTRULE_CREATE` under `manage cloudevents-rules`. For rules with Functions actions, Oracle's Events IAM guidance also lists access to Functions resources and virtual networking resources for actions. In OKE Workload Identity testing, `manage cloudevents-rules` was not enough by itself: OCI Events `CreateRule` failed until the workload principal also had `inspect compartments in tenancy`.
+
+Use `functions-family` with the trailing `s`. `function-family` is not the correct Functions aggregate resource type.
 
 Operator workload policy:
 
 ```text
-Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
+Allow any-user to inspect compartments in tenancy where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage functions-family in compartment <function-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to use virtual-network-family in compartment <function-network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
 Events rule invocation policy:
 
 ```text
-Allow any-user to use fn-invocation in compartment <function-compartment> where all {
-  request.principal.type = 'eventrule'
-}
+Allow any-user to use fn-invocation in compartment <function-compartment> where all {request.principal.type = 'eventrule'}
 ```
 
-Use the namespace, service account, cluster OCID, and compartments from your Helm deployment and target Functions. A missing workload policy commonly appears as `404 NotAuthorizedOrNotFound` on `CreateRule`. A missing invocation policy can let the rule reconcile but stop matching events from invoking the Function.
+Use the namespace, service account, cluster OCID, and compartments from your Helm deployment and target Functions. If you use defined tags on rules, also grant the workload `use tag-namespaces` for the tag namespace. A missing workload policy commonly appears as `404 NotAuthorizedOrNotFound` on `CreateRule`. A missing invocation policy can let the rule reconcile but stop matching events from invoking the Function.
+
+Object Storage event conditions do not require `object-family` permissions for OCI Events rule creation. The bucket still must have object events enabled, or no object create/delete events will be emitted for the rule to match.
+
+For diagnostics only, you can temporarily prove an IAM gap by granting the workload `manage all-resources` in the target compartment, testing rule creation, and then immediately replacing it with the least-privilege statements above. Do not leave `manage all-resources` as the permanent operator policy.
 
 See [OKE deployment](oke-deployment.md) for the broader Workload Identity policy context.
 
@@ -145,8 +149,8 @@ Missing Events IAM permission:
 Invalid event condition JSON:
 
 - `condition.rawJson` must be a JSON object.
-- OCI Events condition values must be scalar strings in the common single-value case; arrays are rejected before calling OCI.
-- Structured `condition.eventType` currently accepts one value. Use separate triggers for multiple event types.
+- OCI Events condition values should be scalar strings in the common single-value case.
+- Arrays are valid for intentional any-of matching across multiple event types or data attribute values.
 - Structured `condition.data` must be valid object-shaped YAML/JSON.
 - `status.conditions[?type=="RuleReady"]` uses reason `InvalidCondition` when validation fails.
 

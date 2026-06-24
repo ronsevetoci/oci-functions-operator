@@ -115,29 +115,33 @@ serviceAccount:
 
 `FunctionEventTrigger` needs two OCI IAM paths:
 
-- The operator workload identity must be able to manage OCI Events rules in the target rule compartment.
+- The operator workload identity must be able to inspect compartments, manage OCI Events rules, and access the Function action target.
 - The OCI Events rule principal must be able to invoke the target Function in the function compartment.
+
+Oracle documents `CreateRule` as requiring `EVENTRULE_CREATE`, which is included in `manage cloudevents-rules`. For Events rules with Functions actions, Oracle's Events IAM guidance also lists Functions and virtual-network access for action resources. In OKE Workload Identity testing, `manage cloudevents-rules` was not enough by itself: OCI Events `CreateRule` failed until the workload principal also had `inspect compartments in tenancy`.
+
+Use the Functions aggregate resource type `functions-family` with the trailing `s`. `function-family` is incorrect.
 
 Operator workload policy:
 
 ```text
-Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
+Allow any-user to inspect compartments in tenancy where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage functions-family in compartment <function-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to use virtual-network-family in compartment <function-network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
 Events rule invocation policy:
 
 ```text
-Allow any-user to use fn-invocation in compartment <function-compartment> where all {
-  request.principal.type = 'eventrule'
-}
+Allow any-user to use fn-invocation in compartment <function-compartment> where all {request.principal.type = 'eventrule'}
 ```
 
-Scope these policies to the compartments and conditions your tenancy supports. A missing Events-rule policy can surface as `404 NotAuthorizedOrNotFound` from `CreateRule`; a missing function invocation policy can allow the rule to exist but prevent matching events from invoking the Function.
+Scope these policies to the compartments and conditions your tenancy supports. If the rule uses defined tags, also grant `use tag-namespaces` for those tag namespaces. A missing workload policy can surface as `404 NotAuthorizedOrNotFound` from `CreateRule`; a missing function invocation policy can allow the rule to exist but prevent matching events from invoking the Function.
+
+Object Storage event conditions do not require `object-family` permissions for rule creation. The bucket still must have object events enabled.
+
+Use `manage all-resources` only as a short-lived diagnostic policy while proving an IAM gap, then replace it with the least-privilege policy set above.
 
 ## Extra Environment
 

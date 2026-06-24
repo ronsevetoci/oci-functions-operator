@@ -266,7 +266,7 @@ func conditionJSONFromSpec(condition functionsv1alpha1.FunctionEventCondition) (
 	}
 
 	document := struct {
-		EventType string      `json:"eventType,omitempty"`
+		EventType interface{} `json:"eventType,omitempty"`
 		Data      interface{} `json:"data,omitempty"`
 	}{}
 	if len(condition.EventType) > 0 {
@@ -290,7 +290,7 @@ func conditionJSONFromSpec(condition functionsv1alpha1.FunctionEventCondition) (
 		}
 		document.Data = normalizedData
 	}
-	if document.EventType == "" && document.Data == nil {
+	if document.EventType == nil && document.Data == nil {
 		return "", fmt.Errorf("condition must set rawJson or at least one structured field")
 	}
 	encoded, err := json.Marshal(document)
@@ -300,15 +300,22 @@ func conditionJSONFromSpec(condition functionsv1alpha1.FunctionEventCondition) (
 	return string(encoded), nil
 }
 
-func renderConditionEventType(eventTypes []string) (string, error) {
-	if len(eventTypes) > 1 {
-		return "", fmt.Errorf("condition.eventType has %d values; OCI Events conditions require a single scalar eventType value", len(eventTypes))
+func renderConditionEventType(eventTypes []string) (interface{}, error) {
+	if len(eventTypes) == 0 {
+		return nil, fmt.Errorf("condition.eventType must contain at least one value")
 	}
-	eventType := strings.TrimSpace(eventTypes[0])
-	if eventType == "" {
-		return "", fmt.Errorf("condition.eventType must not be empty")
+	normalized := make([]string, 0, len(eventTypes))
+	for i, value := range eventTypes {
+		eventType := strings.TrimSpace(value)
+		if eventType == "" {
+			return nil, fmt.Errorf("condition.eventType[%d] must not be empty", i)
+		}
+		normalized = append(normalized, eventType)
 	}
-	return eventType, nil
+	if len(normalized) == 1 {
+		return normalized[0], nil
+	}
+	return normalized, nil
 }
 
 func normalizeConditionJSON(value string) (string, error) {
@@ -347,19 +354,23 @@ func normalizeConditionData(value interface{}, path string, collapseSingleArrays
 		}
 		return normalized, nil
 	case []interface{}:
-		if !collapseSingleArrays {
-			return nil, fmt.Errorf("%s is an array; OCI Events condition values must be scalar", path)
+		if len(typed) == 0 {
+			return nil, fmt.Errorf("%s is an empty array; OCI Events condition arrays must contain at least one value", path)
 		}
-		switch len(typed) {
-		case 0:
-			return nil, fmt.Errorf("%s is an empty array; OCI Events condition values must be scalar", path)
-		case 1:
-			return normalizeConditionData(typed[0], path, collapseSingleArrays)
-		default:
-			return nil, fmt.Errorf("%s has %d values; OCI Events condition values must be scalar, create separate FunctionEventTrigger resources for multiple values", path, len(typed))
+		normalized := make([]interface{}, 0, len(typed))
+		for i, child := range typed {
+			value, err := normalizeConditionData(child, fmt.Sprintf("%s[%d]", path, i), false)
+			if err != nil {
+				return nil, err
+			}
+			normalized = append(normalized, value)
 		}
+		if collapseSingleArrays && len(normalized) == 1 {
+			return normalized[0], nil
+		}
+		return normalized, nil
 	case nil:
-		return nil, fmt.Errorf("%s is null; OCI Events condition values must be scalar", path)
+		return nil, fmt.Errorf("%s is null; OCI Events condition values must not be null", path)
 	default:
 		return typed, nil
 	}
@@ -367,12 +378,17 @@ func normalizeConditionData(value interface{}, path string, collapseSingleArrays
 
 func validateOCIEventsConditionDocument(document map[string]interface{}) error {
 	if value, ok := document["eventType"]; ok {
-		eventType, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("$.eventType must be a scalar string")
-		}
-		if strings.TrimSpace(eventType) == "" {
-			return fmt.Errorf("$.eventType must not be empty")
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) == "" {
+				return fmt.Errorf("$.eventType must not be empty")
+			}
+		case []interface{}:
+			if _, err := eventTypeStringsFromInterfaces(typed, "$.eventType"); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("$.eventType must be a string or array of strings")
 		}
 	}
 	if value, ok := document["data"]; ok {
@@ -393,6 +409,25 @@ func validateOCIEventsConditionDocument(document map[string]interface{}) error {
 		}
 	}
 	return nil
+}
+
+func eventTypeStringsFromInterfaces(values []interface{}, path string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, fmt.Errorf("%s must contain at least one value", path)
+	}
+	normalized := make([]string, 0, len(values))
+	for i, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be a string", path, i)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, fmt.Errorf("%s[%d] must not be empty", path, i)
+		}
+		normalized = append(normalized, text)
+	}
+	return normalized, nil
 }
 
 func normalizeOCIEventRuleError(err error) string {

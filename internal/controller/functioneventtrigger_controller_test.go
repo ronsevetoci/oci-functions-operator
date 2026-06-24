@@ -296,34 +296,46 @@ func TestFunctionEventTriggerRendersObjectStorageCreateObjectCondition(t *testin
 	}
 }
 
-func TestFunctionEventTriggerRejectsMultipleStructuredEventTypes(t *testing.T) {
-	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+func TestFunctionEventTriggerRendersMultipleStructuredEventTypes(t *testing.T) {
+	conditionJSON, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
 		EventType: []string{
 			"com.oraclecloud.objectstorage.createobject",
 			"com.oraclecloud.objectstorage.deleteobject",
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "single scalar eventType") {
-		t.Fatalf("error = %v, want single scalar eventType guidance", err)
+	if err != nil {
+		t.Fatalf("conditionJSONFromSpec: %v", err)
+	}
+	want := `{"eventType":["com.oraclecloud.objectstorage.createobject","com.oraclecloud.objectstorage.deleteobject"]}`
+	if conditionJSON != want {
+		t.Fatalf("conditionJSON = %s, want %s", conditionJSON, want)
 	}
 }
 
-func TestFunctionEventTriggerRejectsMultipleStructuredDataValues(t *testing.T) {
-	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+func TestFunctionEventTriggerRendersMultipleStructuredDataValues(t *testing.T) {
+	conditionJSON, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
 		EventType: []string{"com.oraclecloud.objectstorage.createobject"},
 		Data:      rawExtension(`{"additionalDetails":{"bucketName":["bucket-a","bucket-b"]}}`),
 	})
-	if err == nil || !strings.Contains(err.Error(), "$.data.additionalDetails.bucketName has 2 values") {
-		t.Fatalf("error = %v, want multiple data value guidance", err)
+	if err != nil {
+		t.Fatalf("conditionJSONFromSpec: %v", err)
+	}
+	want := `{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":["bucket-a","bucket-b"]}}}`
+	if conditionJSON != want {
+		t.Fatalf("conditionJSON = %s, want %s", conditionJSON, want)
 	}
 }
 
-func TestFunctionEventTriggerRejectsArrayRawConditionValues(t *testing.T) {
-	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
-		RawJSON: `{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":["bucket-20260624-1058"]}}}`,
+func TestFunctionEventTriggerAcceptsArrayRawConditionValues(t *testing.T) {
+	conditionJSON, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+		RawJSON: `{"eventType":["com.oraclecloud.objectstorage.createobject"],"data":{"additionalDetails":{"bucketName":["bucket-20260624-1058"]}}}`,
 	})
-	if err == nil || !strings.Contains(err.Error(), "rawJson is not valid OCI Events condition JSON") {
-		t.Fatalf("error = %v, want rawJson OCI Events validation guidance", err)
+	if err != nil {
+		t.Fatalf("conditionJSONFromSpec: %v", err)
+	}
+	want := `{"data":{"additionalDetails":{"bucketName":["bucket-20260624-1058"]}},"eventType":["com.oraclecloud.objectstorage.createobject"]}`
+	if conditionJSON != want {
+		t.Fatalf("conditionJSON = %s, want %s", conditionJSON, want)
 	}
 }
 

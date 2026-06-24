@@ -70,61 +70,49 @@ Workload mode must not require `OCI_RESOURCE_PRINCIPAL_*` environment variables.
 
 Scope policies as tightly as your tenancy model allows. The workload principal conditions should match the namespace, service account, and OKE cluster OCID used by this deployment.
 
-For managed mode, the operator needs to ensure OCI Functions applications/functions and invoke the resolved function. You can grant broad `manage functions-family` permissions, or use narrower permissions for `fn-apps`, `fn-functions`, and invocation according to your tenancy policy model.
+For managed mode, the operator needs to ensure OCI Functions applications/functions and invoke the resolved function. You can grant broad `manage functions-family` permissions, or use narrower permissions for `fn-app`, `fn-function`, and invocation according to your tenancy policy model.
 
 Example with narrower resource families:
 
 ```text
-Allow any-user to manage fn-apps in compartment <functions-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
-
-Allow any-user to manage fn-functions in compartment <functions-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
+Allow any-user to manage fn-app in compartment <functions-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage fn-function in compartment <functions-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
-For `FunctionEventTrigger`, the same workload principal also needs permission to manage OCI Events rules in the compartment where triggers create rules:
+For `FunctionEventTrigger`, the same workload principal also needs permission to inspect compartments, manage OCI Events rules, and access the Function action target. Oracle documents `CreateRule` as `EVENTRULE_CREATE` under `manage cloudevents-rules`; for rules with Functions actions, Oracle's Events IAM guidance also lists Functions and virtual-network access for action resources. In OKE Workload Identity testing, `manage cloudevents-rules` was not enough by itself: OCI Events `CreateRule` failed until the workload principal also had `inspect compartments in tenancy`.
+
+Use `functions-family` with the trailing `s`. `function-family` is incorrect.
 
 ```text
-Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
+Allow any-user to inspect compartments in tenancy where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to manage functions-family in compartment <function-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+Allow any-user to use virtual-network-family in compartment <function-network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
+
+If the trigger rule uses defined tags, also grant `use tag-namespaces` for those tag namespaces.
 
 OCI Events also needs permission for the Events rule principal to invoke the target Function:
 
 ```text
-Allow any-user to use fn-invocation in compartment <functions-compartment> where all {
-  request.principal.type = 'eventrule'
-}
+Allow any-user to use fn-invocation in compartment <functions-compartment> where all {request.principal.type = 'eventrule'}
 ```
 
 If a rule is created but matching events do not invoke the function, check this Events-rule-to-Functions invoke policy in the target function compartment.
 
+Object Storage event conditions do not require `object-family` permissions for rule creation. The bucket still must have object events enabled.
+
+Use `manage all-resources` only as a short-lived diagnostic policy while proving an IAM gap, then replace it with the least-privilege policy set above.
+
 If the application subnets live in a different compartment, grant network use there:
 
 ```text
-Allow any-user to use virtual-network-family in compartment <network-compartment> where all {
-  request.principal.type = 'workload',
-  request.principal.namespace = 'oci-functions-operator-system',
-  request.principal.service_account = 'oci-functions-operator-controller-manager',
-  request.principal.cluster_id = '<oke-cluster-ocid>'
-}
+Allow any-user to use virtual-network-family in compartment <network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
 If the function image is in a private OCIR repository, add the appropriate repository read policy for the Functions application principal in your registry compartment/tenancy. Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but network egress is still required.
 
-For existing-mode invocation only, you may be able to narrow policy to `use fn-functions` for the target compartment instead of `manage`.
+For existing-mode invocation only, you may be able to narrow policy to `use fn-function` for the target compartment instead of `manage`.
 
 ## Network For Managed Functions
 
@@ -289,7 +277,7 @@ Checks:
 - Confirm `spec.config.compartmentId` is the Functions compartment.
 - Confirm `spec.config.subnetIds` are valid and usable by OCI Functions.
 - If `spec.config.nsgIds` is set, confirm the NSG OCIDs are valid and can be attached to the Functions application.
-- Confirm IAM policy allows managing `fn-apps` and `fn-functions`.
+- Confirm IAM policy allows managing `fn-app` and `fn-function`.
 - Confirm the function image is in same-region OCIR and OCI Functions can pull it.
 
 ### Function Image Pull Failures
