@@ -29,9 +29,9 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 ## Start Here
 
 - [Helm install](docs/helm-install.md): recommended OKE installation and upgrade path.
-- [MVP demo runbook](docs/demo/mvp-demo-runbook.md): exact handoff/demo commands for the final MVP image.
-- [MVP video script](docs/demo/mvp-video-script.md): 5-7 minute narration outline.
-- [MVP checklist](docs/demo/mvp-checklist.md): pre-demo validation checklist.
+- [MVP demo flow](docs/demo/mvp-demo-flow.md): primary concise handoff/demo guide for the final MVP image.
+- [MVP checklist](docs/demo/mvp-checklist.md): short secondary pre-demo checklist.
+- [MVP video script](docs/demo/mvp-video-script.md): short secondary narration outline.
 - [Managed Function demo](docs/managed-function-demo.md): primary OKE walkthrough for managed application/function creation and invocation.
 - [Function events](docs/function-events.md): Kubernetes-native `functionevent.*` events routed directly by the operator.
 - [Function event triggers](docs/event-triggers.md): OCI Events Rule and FunctionEvent trigger setup.
