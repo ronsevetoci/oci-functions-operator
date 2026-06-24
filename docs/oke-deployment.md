@@ -101,7 +101,15 @@ Allow any-user to manage cloudevents-rules in compartment <events-rule-compartme
 }
 ```
 
-Depending on your tenancy policy model, OCI Events may also require permission for the Events service to invoke the target Function. If a rule is created but matching events do not invoke the function, check for an Events-service-to-Functions invoke policy in the target function compartment.
+OCI Events also needs permission for the Events rule principal to invoke the target Function:
+
+```text
+Allow any-user to use fn-invocation in compartment <functions-compartment> where all {
+  request.principal.type = 'eventrule'
+}
+```
+
+If a rule is created but matching events do not invoke the function, check this Events-rule-to-Functions invoke policy in the target function compartment.
 
 If the application subnets live in a different compartment, grant network use there:
 

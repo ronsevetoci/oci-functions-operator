@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
 	operatorauth "github.com/oracle/oci-functions-operator/internal/ociauth"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	ocievents "github.com/oracle/oci-go-sdk/v65/events"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -47,15 +49,15 @@ type OCIOptions struct {
 // OCI manages OCI Events rules through the OCI Go SDK.
 type OCI struct {
 	client eventsClient
+	region string
 }
 
 // NewOCIFromEnvironment constructs an OCI Events manager from OCI-related environment variables.
 func NewOCIFromEnvironment() (*OCI, error) {
-	configProvider, err := operatorauth.ConfigProviderFromEnvironment()
-	if err != nil {
-		return nil, err
-	}
-	return NewOCI(OCIOptions{ConfigProvider: configProvider})
+	return NewOCI(OCIOptions{
+		AuthMode: os.Getenv(operatorauth.EnvOCIAuthMode),
+		Region:   os.Getenv(operatorauth.EnvOCIRegion),
+	})
 }
 
 // NewOCI constructs an OCI Events manager.
@@ -78,7 +80,17 @@ func NewOCI(options OCIOptions) (*OCI, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure OCI Events client: %w", err)
 	}
-	return &OCI{client: client}, nil
+
+	region := strings.TrimSpace(options.Region)
+	if region == "" {
+		if providerRegion, regionErr := configProvider.Region(); regionErr == nil {
+			region = strings.TrimSpace(providerRegion)
+		}
+	}
+	if region != "" {
+		client.SetRegion(region)
+	}
+	return &OCI{client: client, region: region}, nil
 }
 
 func newEventsClient(configProvider common.ConfigurationProvider) (eventsClient, error) {
@@ -225,6 +237,13 @@ func (o *OCI) findRule(ctx context.Context, desired DesiredRule) (ocievents.Rule
 }
 
 func (o *OCI) createRule(ctx context.Context, desired DesiredRule) (ocievents.Rule, error) {
+	log.FromContext(ctx).V(1).Info("creating OCI Events rule",
+		"compartmentId", desired.CompartmentID,
+		"displayName", desired.DisplayName,
+		"functionId", desired.FunctionID,
+		"actionType", string(ocievents.ActionDetailsActionTypeFaas),
+		"condition", desired.ConditionJSON,
+	)
 	response, err := o.client.CreateRule(ctx, ocievents.CreateRuleRequest{
 		CreateRuleDetails: ocievents.CreateRuleDetails{
 			DisplayName:   common.String(desired.DisplayName),

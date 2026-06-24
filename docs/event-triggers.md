@@ -92,12 +92,33 @@ object-created-trigger   Ready   ocid1.eventrule.oc1.me-jeddah-1...          man
 
 ## IAM And Invocation
 
-The operator workload identity needs permission to manage OCI Events rules in the target compartment. OCI may also require a policy that allows the Events service to invoke the target Function. Keep both sides in mind:
+The operator workload identity needs permission to manage OCI Events rules in the target compartment. OCI Events also needs permission to invoke the target Function. Keep both sides in mind:
 
 - Operator workload: manage Events rules.
-- Events service: invoke the Function action target.
+- Events rule principal: invoke the Function action target.
 
-See [OKE deployment](oke-deployment.md) for policy examples.
+Operator workload policy:
+
+```text
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
+```
+
+Events rule invocation policy:
+
+```text
+Allow any-user to use fn-invocation in compartment <function-compartment> where all {
+  request.principal.type = 'eventrule'
+}
+```
+
+Use the namespace, service account, cluster OCID, and compartments from your Helm deployment and target Functions. A missing workload policy commonly appears as `404 NotAuthorizedOrNotFound` on `CreateRule`. A missing invocation policy can let the rule reconcile but stop matching events from invoking the Function.
+
+See [OKE deployment](oke-deployment.md) for the broader Workload Identity policy context.
 
 ## Troubleshooting
 

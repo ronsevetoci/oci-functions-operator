@@ -92,14 +92,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.FunctionEventTriggerReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Manager:  eventTriggerManager,
-		Recorder: mgr.GetEventRecorderFor("functioneventtrigger-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "FunctionEventTrigger")
-		os.Exit(1)
+	if eventTriggerManager != nil {
+		if err = (&controller.FunctionEventTriggerReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Manager:  eventTriggerManager,
+			Recorder: mgr.GetEventRecorderFor("functioneventtrigger-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "FunctionEventTrigger")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("skipping FunctionEventTrigger controller because OCI Events manager is not configured", "mode", invokerMode)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

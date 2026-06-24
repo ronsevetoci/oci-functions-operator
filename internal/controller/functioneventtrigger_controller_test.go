@@ -126,6 +126,37 @@ func TestFunctionEventTriggerWaitsWhenFunctionNotReady(t *testing.T) {
 	}
 }
 
+func TestFunctionEventTriggerWaitsWhenFunctionIDMissing(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	function.Status.FunctionID = ""
+	function.Status.FunctionOCID = ""
+	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	manager := &fakeEventRuleManager{}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(function, trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+
+	if manager.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 while Function status.functionId is empty", manager.createCalls)
+	}
+	updated := getEventTrigger(t, ctx, k8sClient, trigger)
+	if updated.Status.Phase != functionsv1alpha1.FunctionEventTriggerPhasePending {
+		t.Fatalf("phase = %q, want Pending", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "status.functionId") {
+		t.Fatalf("message = %q, want status.functionId guidance", updated.Status.Message)
+	}
+}
+
 func TestFunctionEventTriggerUpdatesRuleDrift(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
@@ -246,6 +277,97 @@ func TestFunctionEventTriggerInvalidConditionFailsClearly(t *testing.T) {
 	}
 }
 
+func TestFunctionEventTriggerCreateRuleFailureReturnsDelayedRequeue(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	manager := &fakeEventRuleManager{ensureErr: errors.New("404 NotAuthorizedOrNotFound: CreateRule not authorized")}
+	recorder := record.NewFakeRecorder(20)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(function, trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager, Recorder: recorder}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	result, err := reconcileEventTriggerResult(t, ctx, reconciler, trigger)
+	if err != nil {
+		t.Fatalf("reconcile returned error = %v, want delayed requeue without raw error", err)
+	}
+	if result.RequeueAfter != functionEventTriggerOCIFailureRequeue {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, functionEventTriggerOCIFailureRequeue)
+	}
+
+	updated := getEventTrigger(t, ctx, k8sClient, trigger)
+	if updated.Status.Phase != functionsv1alpha1.FunctionEventTriggerPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "NotAuthorizedOrNotFound") {
+		t.Fatalf("message = %q, want OCI authorization error", updated.Status.Message)
+	}
+	assertEventContains(t, drainEvents(recorder), "Warning RuleError")
+}
+
+func TestFunctionEventTriggerCreateRuleFailureDoesNotRewriteUnchangedStatusOrEvents(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	manager := &fakeEventRuleManager{ensureErr: errors.New("404 NotAuthorizedOrNotFound: CreateRule not authorized")}
+	recorder := record.NewFakeRecorder(20)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(function, trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager, Recorder: recorder}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	firstFailure := getEventTrigger(t, ctx, k8sClient, trigger)
+	firstRuleReady := meta.FindStatusCondition(firstFailure.Status.Conditions, functionsv1alpha1.FunctionEventTriggerConditionRuleReady)
+	if firstFailure.Status.LastSyncTime == nil {
+		t.Fatalf("lastSyncTime is nil after first effective status update")
+	}
+	if firstRuleReady == nil {
+		t.Fatalf("RuleReady condition is nil after first failure")
+	}
+	assertEventContains(t, drainEvents(recorder), "Warning RuleError")
+
+	result, err := reconcileEventTriggerResult(t, ctx, reconciler, trigger)
+	if err != nil {
+		t.Fatalf("reconcile returned error = %v, want delayed requeue without raw error", err)
+	}
+	if result.RequeueAfter != functionEventTriggerOCIFailureRequeue {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, functionEventTriggerOCIFailureRequeue)
+	}
+
+	secondFailure := getEventTrigger(t, ctx, k8sClient, trigger)
+	secondRuleReady := meta.FindStatusCondition(secondFailure.Status.Conditions, functionsv1alpha1.FunctionEventTriggerConditionRuleReady)
+	if secondFailure.Status.LastSyncTime == nil {
+		t.Fatalf("lastSyncTime is nil after repeated failure")
+	}
+	if !firstFailure.Status.LastSyncTime.Time.Equal(secondFailure.Status.LastSyncTime.Time) {
+		t.Fatalf("lastSyncTime changed from %s to %s for unchanged failure status", firstFailure.Status.LastSyncTime, secondFailure.Status.LastSyncTime)
+	}
+	if secondRuleReady == nil {
+		t.Fatalf("RuleReady condition is nil after repeated failure")
+	}
+	if !firstRuleReady.LastTransitionTime.Time.Equal(secondRuleReady.LastTransitionTime.Time) {
+		t.Fatalf("RuleReady LastTransitionTime changed from %s to %s for unchanged failure", firstRuleReady.LastTransitionTime, secondRuleReady.LastTransitionTime)
+	}
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Fatalf("events after repeated unchanged failure = %q, want none", events)
+	}
+	if len(manager.desired) != 2 {
+		t.Fatalf("desired calls = %d, want 2 after two rule sync attempts", len(manager.desired))
+	}
+}
+
 func TestFunctionEventTriggerDoesNotDuplicateRuleOnRepeatedReconcile(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
@@ -355,10 +477,16 @@ func rawExtension(value string) *runtime.RawExtension {
 func reconcileEventTrigger(t *testing.T, ctx context.Context, reconciler *FunctionEventTriggerReconciler, trigger *functionsv1alpha1.FunctionEventTrigger) {
 	t.Helper()
 
-	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: trigger.Name, Namespace: trigger.Namespace}}
-	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+	if _, err := reconcileEventTriggerResult(t, ctx, reconciler, trigger); err != nil {
 		t.Fatalf("reconcile FunctionEventTrigger: %v", err)
 	}
+}
+
+func reconcileEventTriggerResult(t *testing.T, ctx context.Context, reconciler *FunctionEventTriggerReconciler, trigger *functionsv1alpha1.FunctionEventTrigger) (ctrl.Result, error) {
+	t.Helper()
+
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: trigger.Name, Namespace: trigger.Namespace}}
+	return reconciler.Reconcile(ctx, request)
 }
 
 func getEventTrigger(t *testing.T, ctx context.Context, k8sClient client.Client, trigger *functionsv1alpha1.FunctionEventTrigger) functionsv1alpha1.FunctionEventTrigger {

@@ -111,6 +111,34 @@ serviceAccount:
     example.com/key: value
 ```
 
+## FunctionEventTrigger IAM
+
+`FunctionEventTrigger` needs two OCI IAM paths:
+
+- The operator workload identity must be able to manage OCI Events rules in the target rule compartment.
+- The OCI Events rule principal must be able to invoke the target Function in the function compartment.
+
+Operator workload policy:
+
+```text
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
+```
+
+Events rule invocation policy:
+
+```text
+Allow any-user to use fn-invocation in compartment <function-compartment> where all {
+  request.principal.type = 'eventrule'
+}
+```
+
+Scope these policies to the compartments and conditions your tenancy supports. A missing Events-rule policy can surface as `404 NotAuthorizedOrNotFound` from `CreateRule`; a missing function invocation policy can allow the rule to exist but prevent matching events from invoking the Function.
+
 ## Extra Environment
 
 Use `extraEnv` for additional literal values or Kubernetes `valueFrom` entries:

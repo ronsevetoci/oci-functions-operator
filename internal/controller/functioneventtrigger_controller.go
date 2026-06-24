@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	functionsv1alpha1 "github.com/oracle/oci-functions-operator/api/v1alpha1"
@@ -29,6 +30,8 @@ import (
 const (
 	functionEventTriggerFinalizer = "functioneventtriggers.functions.oci.oracle.com/finalizer"
 
+	functionEventTriggerOCIFailureRequeue = 30 * time.Second
+
 	functionEventTriggerEventWaitingForFunction = "WaitingForFunction"
 	functionEventTriggerEventRuleCreated        = "RuleCreated"
 	functionEventTriggerEventRuleUpdated        = "RuleUpdated"
@@ -39,9 +42,13 @@ const (
 // FunctionEventTriggerReconciler reconciles a FunctionEventTrigger object.
 type FunctionEventTriggerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Manager  eventtrigger.Manager
+	Scheme  *runtime.Scheme
+	Manager eventtrigger.Manager
+
 	Recorder record.EventRecorder
+
+	warningEventMu         sync.Mutex
+	warningEventSignatures map[types.NamespacedName]string
 }
 
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functioneventtriggers,verbs=get;list;watch;update;patch
@@ -79,19 +86,19 @@ func (r *FunctionEventTriggerReconciler) Reconcile(ctx context.Context, req ctrl
 	if err != nil {
 		message := fmt.Sprintf("Invalid OCI Events condition: %v", err)
 		markFunctionEventTriggerError(desiredObject, now, "InvalidCondition", message)
-		r.recordEvent(&trigger, corev1.EventTypeWarning, functionEventTriggerEventRuleError, message)
-		return ctrl.Result{}, r.updateFunctionEventTriggerStatus(ctx, &trigger, desiredObject.Status)
+		r.recordWarningEventIfChanged(&trigger, functionEventTriggerEventRuleError, message)
+		return ctrl.Result{}, r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status)
 	}
 
 	function, result, ready := r.resolveTriggerFunction(ctx, &trigger, desiredObject, now)
 	if !ready {
-		return result, r.updateFunctionEventTriggerStatus(ctx, &trigger, desiredObject.Status)
+		return result, r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status)
 	}
 
 	if r.Manager == nil {
 		message := "Event trigger manager is not configured; run the manager with INVOKER_MODE=oci to manage OCI Events rules."
 		markFunctionEventTriggerPending(desiredObject, now, "EventTriggerManagerNotConfigured", message)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.updateFunctionEventTriggerStatus(ctx, &trigger, desiredObject.Status)
+		return ctrl.Result{RequeueAfter: functionEventTriggerOCIFailureRequeue}, r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status)
 	}
 
 	state, err := r.Manager.EnsureRule(ctx, desiredRuleFromTrigger(&trigger, &function, conditionJSON))
@@ -100,10 +107,11 @@ func (r *FunctionEventTriggerReconciler) Reconcile(ctx context.Context, req ctrl
 		desiredObject.Status.RuleID = state.RuleID
 		message := err.Error()
 		markFunctionEventTriggerError(desiredObject, now, "RuleReconcileError", message)
-		r.recordEvent(&trigger, corev1.EventTypeWarning, functionEventTriggerEventRuleError, "FunctionEventTrigger rule reconcile failed: "+message)
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.updateFunctionEventTriggerStatus(ctx, &trigger, desiredObject.Status)
+		r.recordWarningEventIfChanged(&trigger, functionEventTriggerEventRuleError, "FunctionEventTrigger rule reconcile failed: "+message)
+		return ctrl.Result{RequeueAfter: functionEventTriggerOCIFailureRequeue}, r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status)
 	}
 
+	r.clearWarningEventSignature(&trigger)
 	desiredObject.Status.RuleID = state.RuleID
 	desiredObject.Status.Message = state.Message
 	if desiredObject.Status.Message == "" {
@@ -117,7 +125,7 @@ func (r *FunctionEventTriggerReconciler) Reconcile(ctx context.Context, req ctrl
 		setFunctionEventTriggerConditions(desiredObject, now, conditionState{Status: metav1.ConditionTrue, Reason: "FunctionReady", Message: "Referenced Function is ready."}, conditionState{Status: metav1.ConditionFalse, Reason: "RulePending", Message: desiredObject.Status.Message})
 	}
 
-	if err := r.updateFunctionEventTriggerStatus(ctx, &trigger, desiredObject.Status); err != nil {
+	if err := r.patchFunctionEventTriggerStatusIfChanged(ctx, &trigger, desiredObject.Status); err != nil {
 		return ctrl.Result{}, err
 	}
 	logger.V(1).Info("updated FunctionEventTrigger status", "phase", desiredObject.Status.Phase, "ruleID", desiredObject.Status.RuleID)
@@ -134,16 +142,18 @@ func (r *FunctionEventTriggerReconciler) reconcileDelete(ctx context.Context, tr
 
 	if trigger.DeletionPolicy() == functionsv1alpha1.FunctionEventTriggerDeletionPolicyDelete && trigger.Status.RuleID != "" {
 		if r.Manager == nil {
-			return ctrl.Result{}, fmt.Errorf("cannot delete OCI Events rule %s because event trigger manager is not configured", trigger.Status.RuleID)
+			r.recordWarningEventIfChanged(trigger, functionEventTriggerEventRuleError, fmt.Sprintf("Cannot delete OCI Events rule %s because event trigger manager is not configured.", trigger.Status.RuleID))
+			return ctrl.Result{RequeueAfter: functionEventTriggerOCIFailureRequeue}, nil
 		}
 		state, err := r.Manager.DeleteRule(ctx, trigger.Status.RuleID)
 		r.recordRuleEvents(trigger, state.Events)
 		if err != nil {
-			r.recordEvent(trigger, corev1.EventTypeWarning, functionEventTriggerEventRuleError, "FunctionEventTrigger rule delete failed: "+err.Error())
-			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
+			r.recordWarningEventIfChanged(trigger, functionEventTriggerEventRuleError, "FunctionEventTrigger rule delete failed: "+err.Error())
+			return ctrl.Result{RequeueAfter: functionEventTriggerOCIFailureRequeue}, nil
 		}
 	}
 
+	r.clearWarningEventSignature(trigger)
 	controllerutil.RemoveFinalizer(trigger, functionEventTriggerFinalizer)
 	if err := r.Update(ctx, trigger); err != nil {
 		return ctrl.Result{}, err
@@ -296,24 +306,39 @@ func setFunctionEventTriggerConditions(trigger *functionsv1alpha1.FunctionEventT
 }
 
 func setFunctionEventTriggerCondition(trigger *functionsv1alpha1.FunctionEventTrigger, now metav1.Time, conditionType string, condition conditionState) {
+	lastTransitionTime := now
+	if existing := meta.FindStatusCondition(trigger.Status.Conditions, conditionType); existing != nil &&
+		existing.Status == condition.Status &&
+		existing.Reason == condition.Reason &&
+		existing.Message == condition.Message &&
+		existing.ObservedGeneration == trigger.Generation {
+		lastTransitionTime = existing.LastTransitionTime
+	}
+
 	trigger.SetCondition(metav1.Condition{
 		Type:               conditionType,
 		Status:             condition.Status,
 		Reason:             condition.Reason,
 		Message:            condition.Message,
 		ObservedGeneration: trigger.Generation,
-		LastTransitionTime: now,
+		LastTransitionTime: lastTransitionTime,
 	})
 }
 
-func (r *FunctionEventTriggerReconciler) updateFunctionEventTriggerStatus(ctx context.Context, trigger *functionsv1alpha1.FunctionEventTrigger, desired functionsv1alpha1.FunctionEventTriggerStatus) error {
-	if reflect.DeepEqual(trigger.Status, desired) {
+func (r *FunctionEventTriggerReconciler) patchFunctionEventTriggerStatusIfChanged(ctx context.Context, trigger *functionsv1alpha1.FunctionEventTrigger, desired functionsv1alpha1.FunctionEventTriggerStatus) error {
+	if functionEventTriggerStatusEqual(trigger.Status, desired) {
 		return nil
 	}
 	now := metav1.Now()
 	desired.LastSyncTime = &now
 	trigger.Status = desired
 	return r.Status().Update(ctx, trigger)
+}
+
+func functionEventTriggerStatusEqual(current, desired functionsv1alpha1.FunctionEventTriggerStatus) bool {
+	current.LastSyncTime = nil
+	desired.LastSyncTime = nil
+	return reflect.DeepEqual(current, desired)
 }
 
 func (r *FunctionEventTriggerReconciler) recordRuleEvents(trigger *functionsv1alpha1.FunctionEventTrigger, events []eventtrigger.Event) {
@@ -333,8 +358,40 @@ func (r *FunctionEventTriggerReconciler) recordRuleEvents(trigger *functionsv1al
 		case "":
 			reason = functionEventTriggerEventRuleError
 		}
+		if eventType == corev1.EventTypeWarning {
+			r.recordWarningEventIfChanged(trigger, reason, event.Message)
+			continue
+		}
 		r.recordEvent(trigger, eventType, reason, event.Message)
 	}
+}
+
+func (r *FunctionEventTriggerReconciler) recordWarningEventIfChanged(trigger *functionsv1alpha1.FunctionEventTrigger, reason, message string) {
+	if r.Recorder == nil {
+		return
+	}
+
+	key := types.NamespacedName{Name: trigger.Name, Namespace: trigger.Namespace}
+	signature := reason + "\x00" + message
+
+	r.warningEventMu.Lock()
+	if r.warningEventSignatures == nil {
+		r.warningEventSignatures = map[types.NamespacedName]string{}
+	}
+	if r.warningEventSignatures[key] == signature {
+		r.warningEventMu.Unlock()
+		return
+	}
+	r.warningEventSignatures[key] = signature
+	r.warningEventMu.Unlock()
+
+	r.recordEvent(trigger, corev1.EventTypeWarning, reason, message)
+}
+
+func (r *FunctionEventTriggerReconciler) clearWarningEventSignature(trigger *functionsv1alpha1.FunctionEventTrigger) {
+	r.warningEventMu.Lock()
+	delete(r.warningEventSignatures, types.NamespacedName{Name: trigger.Name, Namespace: trigger.Namespace})
+	r.warningEventMu.Unlock()
 }
 
 func (r *FunctionEventTriggerReconciler) recordEvent(trigger *functionsv1alpha1.FunctionEventTrigger, eventType, reason, message string) {
