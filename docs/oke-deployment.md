@@ -1,8 +1,8 @@
 # Deploy The OCI Functions Operator On OKE
 
-Helm is the recommended OKE installation path. See [Helm install](helm-install.md) for normal installs and upgrades.
+Helm is the supported OKE installation path. See [Helm install](helm-install.md) for full chart values, upgrades, CRD notes, and rendering checks.
 
-This Kustomize guide is retained as a development/internal deployment path. OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
+Kustomize manifests under `config/` are retained for Kubebuilder-generated resources and local controller development only. Do not mix Helm and Kustomize resources for the same cluster install.
 
 ## What Gets Installed
 
@@ -14,57 +14,57 @@ This Kustomize guide is retained as a development/internal deployment path. OCI 
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The operator image is reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
+- The operator image is reachable by OKE. The chart default repository is `ghcr.io/ronsevet/oci-functions-operator/controller`.
 - OKE Workload Identity is enabled/available for the cluster and service account. Use an OKE cluster type/version that supports Workload Identity in your tenancy.
 - OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources, manage OCI Events rules, and invoke functions.
 - For managed mode: a compartment OCID, subnet OCIDs, optional NSG OCIDs, and a same-region OCIR function image OCI Functions can pull.
 - For existing mode: an existing function OCID and that function's invoke endpoint.
 
-## Install CRDs
+## Install With Helm
 
-From the repository root:
+Set the operator image tag you want OKE to run:
 
 ```sh
-make manifests
-kubectl apply -k config/crd
+export OPERATOR_IMAGE_REPOSITORY="ghcr.io/ronsevet/oci-functions-operator/controller"
+export OPERATOR_IMAGE_TAG="<tag>"
+export OCI_REGION="me-jeddah-1"
+```
+
+Install or upgrade the operator:
+
+```sh
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --create-namespace \
+  --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
+  --set image.tag="$OPERATOR_IMAGE_TAG" \
+  --set oci.region="$OCI_REGION"
+```
+
+Confirm the deployment and CRDs:
+
+```sh
+kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
 kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com
 ```
 
-## Deploy The Manager With Fake Mode
-
-Fake mode is useful for checking the Kubernetes installation path before wiring OCI permissions.
-
-```sh
-export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
-
-kubectl apply -k config/default
-kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
-kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
-```
-
-The base manifest sets `INVOKER_MODE=fake`.
-
 ## OKE Workload Identity Auth
 
-For OKE, OCI mode uses the OCI Go SDK OKE Workload Identity provider:
+For OKE, the Helm chart configures OCI mode with the OCI Go SDK OKE Workload Identity provider. The chart defaults are:
 
-```text
-INVOKER_MODE=oci
-OCI_AUTH_MODE=workload
+```yaml
+oci:
+  invokerMode: oci
+  authMode: workload
 ```
 
-If `OCI_AUTH_MODE` is unset and `INVOKER_MODE=oci`, the manager defaults to `workload`.
-
-Required manager environment for OCI mode on OKE:
-
-- `INVOKER_MODE=oci`
-- `OCI_AUTH_MODE=workload`
-- `OCI_RESOURCE_PRINCIPAL_VERSION=2.2`
-- `OCI_RESOURCE_PRINCIPAL_REGION=<cluster-or-workload-region>`, for example `me-jeddah-1`
+Set `oci.region=<cluster-or-workload-region>`, for example `me-jeddah-1`, when the SDK needs an explicit region for OKE Workload Identity.
 
 There is no manager-level `OCI_FUNCTIONS_INVOKE_ENDPOINT`. Existing Functions put the endpoint in `Function.spec.invokeEndpoint`; managed Functions discover it into `Function.status.invokeEndpoint`.
 
 The SDK also uses the pod service account token, Kubernetes service account CA, and `KUBERNETES_SERVICE_HOST` provided by Kubernetes/OKE.
+
+Workload mode must not require `OCI_RESOURCE_PRINCIPAL_*` environment variables. Resource Principal auth is a different OCI auth path and is not the intended OKE deployment mode for this operator.
 
 ## IAM Policy
 
@@ -133,32 +133,6 @@ FunctionInvokeImageNotAvailable: Failed to pull function image
 ```
 
 A public OCIR repository or otherwise accessible repository does not avoid the need for network egress from the Functions application.
-
-## Deploy The Manager With OCI Mode
-
-Set cluster-specific values:
-
-```sh
-export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:dev"
-export OCI_RESOURCE_PRINCIPAL_REGION="me-jeddah-1"
-```
-
-Apply the OCI mode overlay, then replace the sample ConfigMap values:
-
-```sh
-kubectl apply -k config/overlays/oci-mode
-
-kubectl -n oci-functions-operator-system create configmap oci-functions-operator-oci-mode \
-  --from-literal=INVOKER_MODE=oci \
-  --from-literal=OCI_AUTH_MODE=workload \
-  --from-literal=OCI_RESOURCE_PRINCIPAL_VERSION=2.2 \
-  --from-literal=OCI_RESOURCE_PRINCIPAL_REGION="$OCI_RESOURCE_PRINCIPAL_REGION" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
-kubectl -n oci-functions-operator-system rollout restart deployment/oci-functions-operator-controller-manager
-kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
-```
 
 Confirm no local OCI credential Secret is mounted:
 
@@ -281,16 +255,18 @@ Symptoms:
 
 - Manager fails startup with `configure OCI Workload Identity auth provider`.
 - `Function` status or `FunctionJob` status contains `oci auth error`.
-- Manager logs mention `401`, `403`, `resource principal`, `Workload Identity`, service account token, or `OCI_RESOURCE_PRINCIPAL_*`.
+- Manager logs mention `401`, `403`, `Workload Identity`, service account token, or stale `OCI_RESOURCE_PRINCIPAL_*` expectations.
 
 Checks:
 
-- Confirm `OCI_AUTH_MODE=workload` in the manager pod.
-- Confirm `OCI_RESOURCE_PRINCIPAL_VERSION=2.2` and `OCI_RESOURCE_PRINCIPAL_REGION=<region>` are set.
+- Confirm the Helm release uses `oci.authMode=workload`.
+- Confirm `OCI_REGION=<region>` is set when your deployment needs an explicit Workload Identity region.
+- Confirm `OCI_RESOURCE_PRINCIPAL_VERSION`, `OCI_RESOURCE_PRINCIPAL_REGION`, and other `OCI_RESOURCE_PRINCIPAL_*` variables are not part of the intended OKE deployment config.
 - Confirm the pod uses service account `oci-functions-operator-controller-manager`.
 - Confirm the service account token is mounted in the pod.
 - Confirm the OKE cluster supports Workload Identity for the workload.
 - Confirm the IAM policy matches the namespace, service account, cluster OCID, and target compartments.
+- If logs still say `OCI_RESOURCE_PRINCIPAL_REGION` is missing, confirm the deployed operator image includes the Workload Identity auth fix.
 
 ### Managed Function Reconcile Errors
 
@@ -328,19 +304,22 @@ Checks:
 
 Symptoms:
 
-- The manager pod cannot pull `controller:latest`.
+- The manager pod cannot pull the configured operator image.
 - The deployment stays in `ImagePullBackOff`.
 
 Checks:
 
 - Build and push the operator/controller image to a registry OKE can pull.
-- Set the deployment image:
+- Upgrade the Helm release with the reachable image:
 
 ```sh
-kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
+helm upgrade oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
+  --set image.tag="$OPERATOR_IMAGE_TAG"
 ```
 
-- `controller:latest` in the base manifest is only a local scaffold placeholder.
+- If `image.tag` is empty, the chart uses `Chart.appVersion`, currently `latest`.
 
 ### Invoke Endpoint Errors
 
@@ -385,10 +364,10 @@ Symptoms:
 
 Checks:
 
-- Reapply RBAC: `kubectl apply -k config/rbac`.
+- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, status/finalizers, and core `events`.
+- Re-run `helm upgrade` if the ClusterRole drifted.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
-- Confirm generated `ClusterRole` includes `functions/status`, `functionjobs/status`, `functioneventtriggers/status`, and core `events`.
-- Reapply the full default or OCI overlay if RBAC drifted.
+- Do not patch a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
 
 ## Local Config Auth
 

@@ -44,13 +44,9 @@ spec:
           value: {{ .Values.oci.invokerMode | quote }}
         - name: OCI_AUTH_MODE
           value: {{ .Values.oci.authMode | quote }}
-        {{- if .Values.oci.resourcePrincipalVersion }}
-        - name: OCI_RESOURCE_PRINCIPAL_VERSION
-          value: {{ .Values.oci.resourcePrincipalVersion | quote }}
-        {{- end }}
-        {{- if .Values.oci.resourcePrincipalRegion }}
-        - name: OCI_RESOURCE_PRINCIPAL_REGION
-          value: {{ .Values.oci.resourcePrincipalRegion | quote }}
+        {{- if .Values.oci.region }}
+        - name: OCI_REGION
+          value: {{ .Values.oci.region | quote }}
         {{- end }}
         {{- with .Values.extraEnv }}
         {{- toYaml . | nindent 8 }}

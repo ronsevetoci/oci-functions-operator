@@ -2,6 +2,8 @@
 
 Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place.
 
+Use Helm for supported OKE installs and upgrades. Kustomize manifests under `config/` are retained for operator development only. Do not mix Helm and Kustomize resources for the same cluster install.
+
 The chart lives at:
 
 ```sh
@@ -16,8 +18,7 @@ The default values target OKE with Workload Identity:
 oci:
   invokerMode: oci
   authMode: workload
-  resourcePrincipalVersion: "2.2"
-  resourcePrincipalRegion: ""
+  region: ""
 
 serviceAccount:
   create: true
@@ -26,7 +27,9 @@ serviceAccount:
 
 The chart does not mount OCI config files, PEM keys, developer credentials, or a global invoke endpoint. Function invoke endpoints come from each `Function` resource.
 
-Set `oci.resourcePrincipalRegion` when your OKE Workload Identity environment requires an explicit region, for example `me-jeddah-1`.
+Set `oci.region` when the OKE Workload Identity provider needs an explicit OCI region, for example `me-jeddah-1`. Workload mode must not require `OCI_RESOURCE_PRINCIPAL_*` environment variables; Resource Principal auth is not the intended OKE path for this operator.
+
+The Helm chart is the supported path for configuring `INVOKER_MODE=oci` and `OCI_AUTH_MODE=workload` on OKE.
 
 ## Install
 
@@ -46,7 +49,7 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
   --set image.tag=<tag> \
-  --set oci.resourcePrincipalRegion=me-jeddah-1
+  --set oci.region=me-jeddah-1
 ```
 
 ## Upgrade
@@ -114,7 +117,7 @@ Use `extraEnv` for additional literal values or Kubernetes `valueFrom` entries:
 
 ```yaml
 extraEnv:
-- name: OCI_RESOURCE_PRINCIPAL_REGION
+- name: OCI_REGION
   value: me-jeddah-1
 ```
 
@@ -182,6 +185,7 @@ Missing RBAC:
 
 - Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, their `status` and `finalizers`, and core `events`.
 - Re-run the Helm upgrade if the ClusterRole drifted.
+- Do not repair a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
 
 Wrong service account in IAM policy:
 
@@ -194,3 +198,9 @@ Wrong service account in IAM policy:
 - Check rendered env:
   `kubectl -n oci-functions-operator-system get deploy oci-functions-operator-controller-manager -o yaml`
 - Do not mount local OCI config files or PEM keys into the OKE deployment.
+
+Resource Principal env vars in OKE:
+
+- Do not set `OCI_RESOURCE_PRINCIPAL_VERSION`, `OCI_RESOURCE_PRINCIPAL_REGION`, or other `OCI_RESOURCE_PRINCIPAL_*` variables for the Helm deployment.
+- Use `oci.authMode=workload` and, when needed, `oci.region=<region>`.
+- If manager logs mention missing `OCI_RESOURCE_PRINCIPAL_REGION`, confirm the chart and operator image include the Workload Identity auth fix.

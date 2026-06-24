@@ -2,19 +2,14 @@
 
 This is the primary OKE demo. It uses `mode: Managed`, so the operator creates or updates the OCI Functions application/function and discovers the invoke endpoint into `Function.status.invokeEndpoint`.
 
-OKE deployments should run the manager with Workload Identity:
-
-```text
-INVOKER_MODE=oci
-OCI_AUTH_MODE=workload
-```
+OKE deployments should install the manager with Helm. The chart defaults to OCI mode with Workload Identity.
 
 There is no global `OCI_FUNCTIONS_INVOKE_ENDPOINT` in managed mode.
 
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The CRDs are installed or can be installed with `kubectl apply -k config/crd`.
+- Helm is available for installing the operator chart.
 - The manager service account has IAM permissions to manage OCI Functions applications/functions, use the target network resources, and invoke functions in the target compartment.
 - You have a Jeddah compartment OCID and subnet OCID for OCI Functions.
 - If the Functions application uses Network Security Groups, you have an NSG OCID whose egress rules allow TCP 443 to Oracle Services Network/OCIR.
@@ -88,34 +83,25 @@ podman push "jed.ocir.io/${TENANCY_NAMESPACE}/hello-function:${TAG}"
 
 Use `linux/amd64` for a `GENERIC_X86` OCI Functions application. If you choose an ARM application shape, build an ARM64-compatible image instead.
 
-## 3. Install CRDs And Deploy The Operator
+## 3. Install The Operator With Helm
 
 ```sh
-make manifests
-kubectl apply -k config/crd
-```
+export OPERATOR_IMAGE_REPOSITORY="${OPERATOR_IMAGE_REPOSITORY:-ghcr.io/ronsevet/oci-functions-operator/controller}"
+export OPERATOR_IMAGE_TAG="<tag>"
+export OCI_REGION="me-jeddah-1"
 
-Deploy the manager in OCI mode:
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --create-namespace \
+  --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
+  --set image.tag="$OPERATOR_IMAGE_TAG" \
+  --set oci.region="$OCI_REGION"
 
-```sh
-export OPERATOR_IMAGE="${OPERATOR_IMAGE:-ghcr.io/ronsevetoci/oci-functions-operator/controller:dev}"
-export OCI_RESOURCE_PRINCIPAL_REGION="me-jeddah-1"
-
-kubectl apply -k config/overlays/oci-mode
-
-kubectl -n oci-functions-operator-system create configmap oci-functions-operator-oci-mode \
-  --from-literal=INVOKER_MODE=oci \
-  --from-literal=OCI_AUTH_MODE=workload \
-  --from-literal=OCI_RESOURCE_PRINCIPAL_VERSION=2.2 \
-  --from-literal=OCI_RESOURCE_PRINCIPAL_REGION="$OCI_RESOURCE_PRINCIPAL_REGION" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
-kubectl -n oci-functions-operator-system rollout restart deployment/oci-functions-operator-controller-manager
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
 ```
 
-OKE Workload Identity does not require a local OCI config file, PEM Secret, or mounted developer credentials.
+OKE Workload Identity does not require a local OCI config file, PEM Secret, mounted developer credentials, or `OCI_RESOURCE_PRINCIPAL_*` environment variables.
+Do not mix this Helm install with Kustomize resources from `config/` on the same cluster.
 
 ## 4. Apply A Managed Function
 
@@ -221,14 +207,15 @@ Expected success indicators:
 
 Symptoms:
 
-- Manager logs mention Workload Identity, resource principal, `401`, or `403`.
+- Manager logs mention Workload Identity, stale Resource Principal env var expectations, `401`, or `403`.
 - `Function.status.phase=Error`.
 - `FunctionJob.status.lastError` contains an OCI auth error.
 
 Checks:
 
-- Confirm the manager pod has `INVOKER_MODE=oci` and `OCI_AUTH_MODE=workload`.
-- Confirm `OCI_RESOURCE_PRINCIPAL_VERSION=2.2` and `OCI_RESOURCE_PRINCIPAL_REGION=me-jeddah-1`.
+- Confirm the Helm release uses `oci.invokerMode=oci` and `oci.authMode=workload`.
+- Confirm `OCI_REGION=me-jeddah-1` is set when an explicit Workload Identity region is needed.
+- Confirm `OCI_RESOURCE_PRINCIPAL_*` variables are not required by the deployed operator image.
 - Confirm IAM policy matches the OKE cluster OCID, namespace, and service account.
 - Confirm the workload can manage Functions applications/functions and use the target network resources.
 
@@ -286,11 +273,10 @@ Symptoms:
 
 Checks:
 
-- Regenerate and apply CRDs:
+- Apply the chart CRDs deliberately after API schema changes:
 
 ```sh
-make manifests
-kubectl apply -k config/crd
+kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
 ### Function Not Ready So FunctionJob Refuses To Run

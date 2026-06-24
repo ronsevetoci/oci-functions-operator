@@ -13,8 +13,7 @@ fullnameOverride: ""
 oci:
   invokerMode: oci
   authMode: workload
-  resourcePrincipalVersion: "2.2"
-  resourcePrincipalRegion: ""
+  region: ""
 
 serviceAccount:
   create: true

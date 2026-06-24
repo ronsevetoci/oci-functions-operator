@@ -7,13 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 
-	"github.com/oracle/oci-functions-operator/internal/lifecycle"
+	operatorauth "github.com/oracle/oci-functions-operator/internal/ociauth"
 	"github.com/oracle/oci-go-sdk/v65/common"
-	ociauth "github.com/oracle/oci-go-sdk/v65/common/auth"
 	ocievents "github.com/oracle/oci-go-sdk/v65/events"
 )
 
@@ -33,12 +31,13 @@ type eventsClient interface {
 }
 
 type eventsClientFactory func(common.ConfigurationProvider) (eventsClient, error)
-type workloadIdentityProviderFactory func() (common.ConfigurationProvider, error)
-type configFileProviderFactory func() common.ConfigurationProvider
+type workloadIdentityProviderFactory = operatorauth.WorkloadIdentityProviderFactory
+type configFileProviderFactory = operatorauth.ConfigFileProviderFactory
 
 // OCIOptions configures an OCI Events rule manager.
 type OCIOptions struct {
 	AuthMode                        string
+	Region                          string
 	ConfigProvider                  common.ConfigurationProvider
 	WorkloadIdentityProviderFactory workloadIdentityProviderFactory
 	ConfigFileProviderFactory       configFileProviderFactory
@@ -52,7 +51,11 @@ type OCI struct {
 
 // NewOCIFromEnvironment constructs an OCI Events manager from OCI-related environment variables.
 func NewOCIFromEnvironment() (*OCI, error) {
-	return NewOCI(OCIOptions{AuthMode: getenv(lifecycle.EnvOCIAuthMode)})
+	configProvider, err := operatorauth.ConfigProviderFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	return NewOCI(OCIOptions{ConfigProvider: configProvider})
 }
 
 // NewOCI constructs an OCI Events manager.
@@ -395,56 +398,21 @@ func isNotFound(err error) bool {
 }
 
 func configProviderForAuthMode(options OCIOptions) (common.ConfigurationProvider, error) {
-	authMode, err := normalizeOCIAuthMode(options.AuthMode)
-	if err != nil {
-		return nil, err
-	}
-
-	switch authMode {
-	case lifecycle.OCIAuthModeWorkload:
-		providerFactory := options.WorkloadIdentityProviderFactory
-		if providerFactory == nil {
-			providerFactory = workloadIdentityConfigProviderFromEnvironment
-		}
-		configProvider, err := providerFactory()
-		if err != nil {
-			return nil, fmt.Errorf("configure OCI Workload Identity auth provider: %w", err)
-		}
-		return configProvider, nil
-	case lifecycle.OCIAuthModeConfig:
-		providerFactory := options.ConfigFileProviderFactory
-		if providerFactory == nil {
-			providerFactory = ociConfigProviderFromEnvironment
-		}
-		return providerFactory(), nil
-	default:
-		return nil, fmt.Errorf("unsupported %s %q; supported values are %q and %q", lifecycle.EnvOCIAuthMode, options.AuthMode, lifecycle.OCIAuthModeWorkload, lifecycle.OCIAuthModeConfig)
-	}
+	return operatorauth.ConfigProvider(operatorauth.Options{
+		AuthMode:                        options.AuthMode,
+		Region:                          options.Region,
+		ConfigProvider:                  options.ConfigProvider,
+		WorkloadIdentityProviderFactory: options.WorkloadIdentityProviderFactory,
+		ConfigFileProviderFactory:       options.ConfigFileProviderFactory,
+	})
 }
 
 func normalizeOCIAuthMode(value string) (string, error) {
-	authMode := strings.ToLower(strings.TrimSpace(value))
-	if authMode == "" {
-		return lifecycle.OCIAuthModeWorkload, nil
-	}
-	switch authMode {
-	case lifecycle.OCIAuthModeWorkload, lifecycle.OCIAuthModeConfig:
-		return authMode, nil
-	default:
-		return "", fmt.Errorf("unsupported %s %q; supported values are %q and %q", lifecycle.EnvOCIAuthMode, value, lifecycle.OCIAuthModeWorkload, lifecycle.OCIAuthModeConfig)
-	}
-}
-
-func workloadIdentityConfigProviderFromEnvironment() (common.ConfigurationProvider, error) {
-	return ociauth.OkeWorkloadIdentityConfigurationProvider()
+	return operatorauth.NormalizeOCIAuthMode(value)
 }
 
 func ociConfigProviderFromEnvironment() common.ConfigurationProvider {
-	profile := strings.TrimSpace(getenv(lifecycle.EnvOCIConfigProfile))
-	if profile != "" {
-		return common.CustomProfileConfigProvider(getenv(lifecycle.EnvOCIConfigFile), profile)
-	}
-	return common.DefaultConfigProvider()
+	return operatorauth.ConfigFileProviderFromEnvironment()
 }
 
 func regionFromOCID(ocid string) string {
@@ -453,10 +421,6 @@ func regionFromOCID(ocid string) string {
 		return parts[3]
 	}
 	return ""
-}
-
-func getenv(key string) string {
-	return strings.TrimSpace(strings.Trim(os.Getenv(key), "\x00"))
 }
 
 func stringValue(value *string) string {

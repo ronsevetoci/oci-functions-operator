@@ -14,8 +14,7 @@ Use this template to record results from a real OCI-mode demo run.
 - `OCI_AUTH_MODE`:
 - `OCI_CONFIG_FILE`:
 - `OCI_CONFIG_PROFILE`:
-- `OCI_RESOURCE_PRINCIPAL_VERSION`:
-- `OCI_RESOURCE_PRINCIPAL_REGION`:
+- `OCI_REGION`:
 - OCI region:
 - OCI tenancy/profile notes:
 - Workload Identity policy used:

@@ -7,10 +7,13 @@ Use this checklist when a managed `Function` or `FunctionJob` does not behave as
 `controller:latest` in the base manager manifest is a scaffold placeholder. For OKE:
 
 1. Build and push the operator/controller image to a registry OKE can pull.
-2. Set the deployment image:
+2. Upgrade the Helm release with that image:
 
 ```sh
-kubectl -n oci-functions-operator-system set image deployment/oci-functions-operator-controller-manager manager="$OPERATOR_IMAGE"
+helm upgrade oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
+  --set image.tag="$OPERATOR_IMAGE_TAG"
 ```
 
 GHCR is acceptable for the operator image if OKE can pull it.
@@ -20,8 +23,7 @@ GHCR is acceptable for the operator image if OKE can pull it.
 If `kubectl apply` reports unknown fields or current status/spec fields do not appear, refresh the CRDs:
 
 ```sh
-make manifests
-kubectl apply -k config/crd
+kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
 An error around a current field such as `status.functionId` usually means the cluster still has an older CRD schema.
@@ -73,13 +75,12 @@ Managed Functions should have:
 
 ## Workload Identity
 
-For OKE:
+For OKE, confirm the Helm release values render OCI mode with Workload Identity:
 
-- `INVOKER_MODE=oci`
-- `OCI_AUTH_MODE=workload`
-- `OCI_RESOURCE_PRINCIPAL_VERSION=2.2`
-- `OCI_RESOURCE_PRINCIPAL_REGION=<region>`
+- `oci.invokerMode=oci`
+- `oci.authMode=workload`
+- `oci.region=<region>` when an explicit Workload Identity region is needed
 
-The manager should not mount a local OCI config file, PEM key, or `oci-functions-operator-oci-config` credential Secret in the OKE path.
+The manager should not mount a local OCI config file, PEM key, `oci-functions-operator-oci-config` credential Secret, or Resource Principal env vars in the OKE path.
 
 Confirm IAM policy matches the namespace, service account, OKE cluster OCID, Functions compartment, and network compartments used by the managed application.

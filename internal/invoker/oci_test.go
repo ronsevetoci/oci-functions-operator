@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	operatorauth "github.com/oracle/oci-functions-operator/internal/ociauth"
 	"github.com/oracle/oci-go-sdk/v65/common"
-	ociauth "github.com/oracle/oci-go-sdk/v65/common/auth"
 	ocifunctions "github.com/oracle/oci-go-sdk/v65/functions"
 )
 
@@ -114,7 +114,7 @@ func TestNewOCIDefaultsToWorkloadAuth(t *testing.T) {
 	clientCalled := false
 
 	ociInvoker, err := NewOCI(OCIOptions{
-		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+		WorkloadIdentityProviderFactory: func(_ operatorauth.WorkloadIdentityOptions) (common.ConfigurationProvider, error) {
 			workloadCalled = true
 			return workloadProvider, nil
 		},
@@ -165,7 +165,7 @@ func TestNewOCIWorkloadModeWrapsUnavailableProvider(t *testing.T) {
 
 	_, err := NewOCI(OCIOptions{
 		AuthMode: OCIAuthModeWorkload,
-		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+		WorkloadIdentityProviderFactory: func(_ operatorauth.WorkloadIdentityOptions) (common.ConfigurationProvider, error) {
 			return nil, expectedErr
 		},
 		ClientFactory: func(common.ConfigurationProvider, string) (functionsInvokeClient, error) {
@@ -186,7 +186,7 @@ func TestNewOCIWorkloadModeWrapsUnavailableProvider(t *testing.T) {
 
 func TestNewOCIFromEnvironmentWorkloadModeReportsMissingProviderEnvironment(t *testing.T) {
 	t.Setenv(EnvOCIAuthMode, OCIAuthModeWorkload)
-	unsetEnv(t, ociauth.ResourcePrincipalVersionEnvVar)
+	unsetEnv(t, EnvOCIRegion)
 
 	_, err := NewOCIFromEnvironment()
 	if err == nil {
@@ -195,8 +195,11 @@ func TestNewOCIFromEnvironmentWorkloadModeReportsMissingProviderEnvironment(t *t
 	if !strings.Contains(err.Error(), "configure OCI Workload Identity auth provider") {
 		t.Fatalf("error = %q, want workload identity context", err)
 	}
-	if !strings.Contains(err.Error(), ociauth.ResourcePrincipalVersionEnvVar) {
-		t.Fatalf("error = %q, want missing %s detail", err, ociauth.ResourcePrincipalVersionEnvVar)
+	if !strings.Contains(err.Error(), EnvOCIRegion) {
+		t.Fatalf("error = %q, want missing %s detail", err, EnvOCIRegion)
+	}
+	if strings.Contains(err.Error(), "OCI_RESOURCE_PRINCIPAL") {
+		t.Fatalf("error = %q, should not expose Resource Principal env vars for workload auth", err)
 	}
 }
 
@@ -211,7 +214,7 @@ func TestNewOCIConfigModeUsesConfigProvider(t *testing.T) {
 			configCalled = true
 			return configProvider
 		},
-		WorkloadIdentityProviderFactory: func() (common.ConfigurationProvider, error) {
+		WorkloadIdentityProviderFactory: func(_ operatorauth.WorkloadIdentityOptions) (common.ConfigurationProvider, error) {
 			t.Fatalf("workload provider factory was called for config auth mode")
 			return nil, nil
 		},
