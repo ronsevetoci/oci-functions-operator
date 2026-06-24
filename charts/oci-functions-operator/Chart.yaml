@@ -3,7 +3,7 @@ name: oci-functions-operator
 description: Kubernetes operator for managing and invoking OCI Functions from OKE
 type: application
 version: 0.1.0
-appVersion: "latest"
+appVersion: "mvp-events-functionevents-v1"
 keywords:
 - oci
 - functions

@@ -4,7 +4,7 @@ Use this checklist when a managed `Function` or `FunctionJob` does not behave as
 
 ## Operator Image Pulls
 
-`controller:latest` in the base manager manifest is a scaffold placeholder. For OKE:
+The controller image in the base manager manifest is a scaffold placeholder. For OKE:
 
 1. Build and push the operator/controller image to a registry OKE can pull.
 2. Upgrade the Helm release with that image:
@@ -12,8 +12,8 @@ Use this checklist when a managed `Function` or `FunctionJob` does not behave as
 ```sh
 helm upgrade oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
-  --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
-  --set image.tag="$OPERATOR_IMAGE_TAG"
+  --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
+  --set image.tag=mvp-events-functionevents-v1
 ```
 
 GHCR is acceptable for the operator image if OKE can pull it.
@@ -37,7 +37,7 @@ The function runtime image is separate from the operator image. It must be:
 - tagged with an existing path/tag, and
 - built for the OCI Functions application shape, such as `linux/amd64` for `GENERIC_X86`.
 
-For Jeddah, use `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>`.
+For Jeddah, use `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1`.
 
 Do not use GHCR for the function runtime image.
 

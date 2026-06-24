@@ -2,11 +2,19 @@
 
 Kubernetes-native management and job-style invocation of OCI Functions from OKE.
 
-The operator adds four namespaced CRDs:
+MVP controller image:
+
+```text
+ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1
+```
+
+## MVP Feature Summary
+
+The MVP adds four namespaced CRDs:
 
 - `Function`: references an existing OCI Function or manages an OCI Functions application/function.
 - `FunctionJob`: invokes a referenced `Function`, fans out inline JSON payloads, retries failed invocations, and records aggregate/per-payload status.
-- `FunctionEventTrigger`: routes OCI Events Rule or Kubernetes-native FunctionEvent event types to a referenced `Function`.
+- `FunctionEventTrigger`: creates OCI Events Rules for OCI service events such as Object Storage events, or routes Kubernetes-native `functionevent.*` events to a referenced `Function`.
 - `FunctionEvent`: Kubernetes-native event object for direct operator-routed invocation through `functionevent.*` event types.
 
 ## Two Images
@@ -14,13 +22,16 @@ The operator adds four namespaced CRDs:
 The operator image and function runtime image are different artifacts:
 
 - Operator/controller image: runs as a Kubernetes Deployment in OKE. It can be in GHCR, OCIR, or any registry OKE can pull from.
-- Function runtime image: runs in OCI Functions. It must be an OCI Functions-compatible Fn image in same-region OCIR, for example `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>` for Jeddah.
+- Function runtime image: runs in OCI Functions. It must be an OCI Functions-compatible Fn image in same-region OCIR, for example `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1` for Jeddah.
 
 Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the runtime image from the Functions application network during invocation, so the application subnet/NSG must have egress to Oracle Services Network/OCIR even when the OCIR repository is public.
 
 ## Start Here
 
 - [Helm install](docs/helm-install.md): recommended OKE installation and upgrade path.
+- [MVP demo runbook](docs/demo/mvp-demo-runbook.md): exact handoff/demo commands for the final MVP image.
+- [MVP video script](docs/demo/mvp-video-script.md): 5-7 minute narration outline.
+- [MVP checklist](docs/demo/mvp-checklist.md): pre-demo validation checklist.
 - [Managed Function demo](docs/managed-function-demo.md): primary OKE walkthrough for managed application/function creation and invocation.
 - [Function events](docs/function-events.md): Kubernetes-native `functionevent.*` events routed directly by the operator.
 - [Function event triggers](docs/event-triggers.md): OCI Events Rule and FunctionEvent trigger setup.

@@ -10,6 +10,12 @@ The chart lives at:
 charts/oci-functions-operator
 ```
 
+The MVP handoff image tag is:
+
+```text
+ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1
+```
+
 ## Defaults
 
 The default values target OKE with Workload Identity:
@@ -38,7 +44,7 @@ helm install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
-  --set image.tag=<tag>
+  --set image.tag=mvp-events-functionevents-v1
 ```
 
 If needed, include the OKE region:
@@ -48,7 +54,7 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
-  --set image.tag=<tag> \
+  --set image.tag=mvp-events-functionevents-v1 \
   --set oci.region=me-jeddah-1
 ```
 
@@ -57,10 +63,10 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
 ```sh
 helm upgrade oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
-  --set image.tag=<new-tag>
+  --set image.tag=mvp-events-functionevents-v1
 ```
 
-Helm installs chart CRDs on first install, but Helm does not automatically upgrade CRDs from the `crds/` directory during a normal `helm upgrade`. After API schema changes, apply CRDs deliberately:
+Helm fresh install installs chart CRDs, but Helm upgrade does not upgrade CRDs from the `crds/` directory. Before upgrading an existing release after API schema changes, apply CRDs deliberately:
 
 ```sh
 kubectl apply -f charts/oci-functions-operator/crds/
@@ -82,11 +88,11 @@ Helm uninstall removes namespaced chart resources, ClusterRoles, and bindings, b
 ```yaml
 image:
   repository: ghcr.io/ronsevet/oci-functions-operator/controller
-  tag: ""
+  tag: mvp-events-functionevents-v1
   pullPolicy: IfNotPresent
 ```
 
-When `image.tag` is empty, the chart uses `Chart.appVersion`, currently `latest`.
+If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `mvp-events-functionevents-v1`.
 
 ## Service Account And Workload Identity
 

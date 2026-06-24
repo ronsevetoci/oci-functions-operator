@@ -14,7 +14,7 @@ Kustomize manifests under `config/` are retained for Kubebuilder-generated resou
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The operator image is reachable by OKE. The chart default repository is `ghcr.io/ronsevet/oci-functions-operator/controller`.
+- The operator image `ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1` is reachable by OKE.
 - OKE Workload Identity is enabled/available for the cluster and service account. Use an OKE cluster type/version that supports Workload Identity in your tenancy.
 - OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources, manage OCI Events rules, and invoke functions.
 - For managed mode: a compartment OCID, subnet OCIDs, optional NSG OCIDs, and a same-region OCIR function image OCI Functions can pull.
@@ -26,7 +26,7 @@ Set the operator image tag you want OKE to run:
 
 ```sh
 export OPERATOR_IMAGE_REPOSITORY="ghcr.io/ronsevet/oci-functions-operator/controller"
-export OPERATOR_IMAGE_TAG="<tag>"
+export OPERATOR_IMAGE_TAG="mvp-events-functionevents-v1"
 export OCI_REGION="me-jeddah-1"
 ```
 
@@ -39,6 +39,12 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --set image.repository="$OPERATOR_IMAGE_REPOSITORY" \
   --set image.tag="$OPERATOR_IMAGE_TAG" \
   --set oci.region="$OCI_REGION"
+```
+
+Helm fresh install installs CRDs, but Helm upgrade does not upgrade CRDs from the chart `crds/` directory. Before upgrading an existing release after API schema changes, run:
+
+```sh
+kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
 Confirm the deployment and CRDs:
@@ -144,7 +150,7 @@ Create a managed `Function`. This example targets Jeddah with region identifier 
 export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
 export SUBNET_OCID="ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"
 export NSG_OCID="ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"
-export FUNCTION_IMAGE="jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>"
+export FUNCTION_IMAGE="jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1"
 
 cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -315,7 +321,7 @@ helm upgrade oci-functions-operator charts/oci-functions-operator \
   --set image.tag="$OPERATOR_IMAGE_TAG"
 ```
 
-- If `image.tag` is empty, the chart uses `Chart.appVersion`, currently `latest`.
+- If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `mvp-events-functionevents-v1`.
 
 ### Invoke Endpoint Errors
 

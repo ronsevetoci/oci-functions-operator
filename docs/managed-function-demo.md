@@ -19,7 +19,7 @@ There is no global `OCI_FUNCTIONS_INVOKE_ENDPOINT` in managed mode.
 The operator controller image and function runtime image are different:
 
 - Operator/controller image: runs the Kubernetes controller manager in OKE. It can be in GHCR, OCIR, or any registry OKE can pull.
-- Function runtime image: runs in OCI Functions. It must be an OCI Functions-compatible Fn image in same-region OCIR, such as `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>` for Jeddah.
+- Function runtime image: runs in OCI Functions. It must be an OCI Functions-compatible Fn image in same-region OCIR, such as `jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1` for Jeddah.
 
 OCI Functions pulls the function image from OCIR during invocation. The Functions application subnet must route to Oracle Services Network/OCIR, usually through a Service Gateway. If an NSG is attached to the Functions application, that NSG must also allow egress TCP 443 to Oracle Services Network/OCIR. A public OCIR repository does not remove the need for this network egress.
 
@@ -28,7 +28,7 @@ OCI Functions pulls the function image from OCIR during invocation. The Function
 If you are testing local code changes, build and push the operator/controller image first:
 
 ```sh
-export OPERATOR_IMAGE="ghcr.io/<OWNER>/oci-functions-operator/controller:<tag>"
+export OPERATOR_IMAGE="ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1"
 
 docker build -t "$OPERATOR_IMAGE" .
 docker push "$OPERATOR_IMAGE"
@@ -44,7 +44,7 @@ Prefer the Fn CLI build path so the output image matches the Fn Project layout.
 The function image must be pushed to Jeddah OCIR for this Jeddah demo:
 
 ```text
-jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
+jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1
 ```
 
 Log in to OCIR with the container engine used by Fn CLI:
@@ -87,7 +87,7 @@ Use `linux/amd64` for a `GENERIC_X86` OCI Functions application. If you choose a
 
 ```sh
 export OPERATOR_IMAGE_REPOSITORY="${OPERATOR_IMAGE_REPOSITORY:-ghcr.io/ronsevet/oci-functions-operator/controller}"
-export OPERATOR_IMAGE_TAG="<tag>"
+export OPERATOR_IMAGE_TAG="mvp-events-functionevents-v1"
 export OCI_REGION="me-jeddah-1"
 
 helm upgrade --install oci-functions-operator charts/oci-functions-operator \
@@ -102,6 +102,12 @@ kubectl -n oci-functions-operator-system rollout status deployment/oci-functions
 
 OKE Workload Identity does not require a local OCI config file, PEM Secret, mounted developer credentials, or `OCI_RESOURCE_PRINCIPAL_*` environment variables.
 Do not mix this Helm install with Kustomize resources from `config/` on the same cluster.
+
+Helm fresh install installs CRDs, but Helm upgrade does not upgrade CRDs from the chart `crds/` directory. Before upgrading an existing release after API schema changes, run:
+
+```sh
+kubectl apply -f charts/oci-functions-operator/crds/
+```
 
 ## 4. Apply A Managed Function
 
@@ -127,7 +133,7 @@ spec:
     # nsgIds:
     # - <NSG_OCID>
     displayName: managed-hello
-    image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:<tag>
+    image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1
     memoryInMBs: 256
     timeoutInSeconds: 120
     config:
