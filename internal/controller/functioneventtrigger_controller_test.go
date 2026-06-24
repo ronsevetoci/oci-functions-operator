@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -19,6 +20,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
 func TestFunctionEventTriggerCreatesRuleAfterFunctionReady(t *testing.T) {
@@ -277,6 +280,53 @@ func TestFunctionEventTriggerInvalidConditionFailsClearly(t *testing.T) {
 	}
 }
 
+func TestFunctionEventTriggerRendersObjectStorageCreateObjectCondition(t *testing.T) {
+	condition := functionsv1alpha1.FunctionEventCondition{
+		EventType: []string{"com.oraclecloud.objectstorage.createobject"},
+		Data:      rawExtension(`{"additionalDetails":{"bucketName":["bucket-20260624-1058"]}}`),
+	}
+
+	conditionJSON, err := conditionJSONFromSpec(condition)
+	if err != nil {
+		t.Fatalf("conditionJSONFromSpec: %v", err)
+	}
+	want := `{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":"bucket-20260624-1058"}}}`
+	if conditionJSON != want {
+		t.Fatalf("conditionJSON = %s, want %s", conditionJSON, want)
+	}
+}
+
+func TestFunctionEventTriggerRejectsMultipleStructuredEventTypes(t *testing.T) {
+	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+		EventType: []string{
+			"com.oraclecloud.objectstorage.createobject",
+			"com.oraclecloud.objectstorage.deleteobject",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "single scalar eventType") {
+		t.Fatalf("error = %v, want single scalar eventType guidance", err)
+	}
+}
+
+func TestFunctionEventTriggerRejectsMultipleStructuredDataValues(t *testing.T) {
+	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+		EventType: []string{"com.oraclecloud.objectstorage.createobject"},
+		Data:      rawExtension(`{"additionalDetails":{"bucketName":["bucket-a","bucket-b"]}}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "$.data.additionalDetails.bucketName has 2 values") {
+		t.Fatalf("error = %v, want multiple data value guidance", err)
+	}
+}
+
+func TestFunctionEventTriggerRejectsArrayRawConditionValues(t *testing.T) {
+	_, err := conditionJSONFromSpec(functionsv1alpha1.FunctionEventCondition{
+		RawJSON: `{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":["bucket-20260624-1058"]}}}`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rawJson is not valid OCI Events condition JSON") {
+		t.Fatalf("error = %v, want rawJson OCI Events validation guidance", err)
+	}
+}
+
 func TestFunctionEventTriggerCreateRuleFailureReturnsDelayedRequeue(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
@@ -318,20 +368,34 @@ func TestFunctionEventTriggerCreateRuleFailureDoesNotRewriteUnchangedStatusOrEve
 	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
 	manager := &fakeEventRuleManager{ensureErr: errors.New("404 NotAuthorizedOrNotFound: CreateRule not authorized")}
 	recorder := record.NewFakeRecorder(20)
+	statusUpdates := 0
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					if _, ok := obj.(*functionsv1alpha1.FunctionEventTrigger); ok {
+						statusUpdates++
+					}
+				}
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).
 		WithObjects(function, trigger).
 		Build()
 	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager, Recorder: recorder}
 
 	reconcileEventTrigger(t, ctx, reconciler, trigger)
 	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	if statusUpdates != 1 {
+		t.Fatalf("status updates after first CreateRule failure = %d, want 1", statusUpdates)
+	}
 	firstFailure := getEventTrigger(t, ctx, k8sClient, trigger)
 	firstRuleReady := meta.FindStatusCondition(firstFailure.Status.Conditions, functionsv1alpha1.FunctionEventTriggerConditionRuleReady)
-	if firstFailure.Status.LastSyncTime == nil {
-		t.Fatalf("lastSyncTime is nil after first effective status update")
+	if firstFailure.Status.LastSyncTime != nil {
+		t.Fatalf("lastSyncTime = %s after first failure, want nil", firstFailure.Status.LastSyncTime)
 	}
 	if firstRuleReady == nil {
 		t.Fatalf("RuleReady condition is nil after first failure")
@@ -348,11 +412,11 @@ func TestFunctionEventTriggerCreateRuleFailureDoesNotRewriteUnchangedStatusOrEve
 
 	secondFailure := getEventTrigger(t, ctx, k8sClient, trigger)
 	secondRuleReady := meta.FindStatusCondition(secondFailure.Status.Conditions, functionsv1alpha1.FunctionEventTriggerConditionRuleReady)
-	if secondFailure.Status.LastSyncTime == nil {
-		t.Fatalf("lastSyncTime is nil after repeated failure")
+	if statusUpdates != 1 {
+		t.Fatalf("status updates after repeated unchanged failure = %d, want 1", statusUpdates)
 	}
-	if !firstFailure.Status.LastSyncTime.Time.Equal(secondFailure.Status.LastSyncTime.Time) {
-		t.Fatalf("lastSyncTime changed from %s to %s for unchanged failure status", firstFailure.Status.LastSyncTime, secondFailure.Status.LastSyncTime)
+	if secondFailure.Status.LastSyncTime != nil {
+		t.Fatalf("lastSyncTime = %s after repeated failure, want nil", secondFailure.Status.LastSyncTime)
 	}
 	if secondRuleReady == nil {
 		t.Fatalf("RuleReady condition is nil after repeated failure")
@@ -365,6 +429,129 @@ func TestFunctionEventTriggerCreateRuleFailureDoesNotRewriteUnchangedStatusOrEve
 	}
 	if len(manager.desired) != 2 {
 		t.Fatalf("desired calls = %d, want 2 after two rule sync attempts", len(manager.desired))
+	}
+}
+
+func TestFunctionEventTriggerCreateRuleFailureNormalizesVolatileOCIError(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	trigger := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	manager := &fakeEventRuleManager{ensureErrs: []error{
+		errors.New(volatileCreateRuleServiceError("opc-request-id-one", "2026-06-24 10:58:01 +0000 UTC")),
+		errors.New(volatileCreateRuleServiceError("opc-request-id-two", "2026-06-24 10:58:31 +0000 UTC")),
+	}}
+	recorder := record.NewFakeRecorder(20)
+	statusUpdates := 0
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					if _, ok := obj.(*functionsv1alpha1.FunctionEventTrigger); ok {
+						statusUpdates++
+					}
+				}
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).
+		WithObjects(function, trigger).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme, Manager: manager, Recorder: recorder}
+
+	reconcileEventTrigger(t, ctx, reconciler, trigger)
+	result, err := reconcileEventTriggerResult(t, ctx, reconciler, trigger)
+	if err != nil {
+		t.Fatalf("first reconcile returned error = %v, want delayed requeue without raw error", err)
+	}
+	if result.RequeueAfter != functionEventTriggerOCIFailureRequeue {
+		t.Fatalf("first RequeueAfter = %s, want %s", result.RequeueAfter, functionEventTriggerOCIFailureRequeue)
+	}
+	firstFailure := getEventTrigger(t, ctx, k8sClient, trigger)
+	wantMessage := "CreateRule failed: 404 NotAuthorizedOrNotFound: Authorization failed or requested resource not found."
+	if firstFailure.Status.Message != wantMessage {
+		t.Fatalf("first status message = %q, want %q", firstFailure.Status.Message, wantMessage)
+	}
+	if strings.Contains(firstFailure.Status.Message, "opc-request-id-one") || strings.Contains(firstFailure.Status.Message, "Timestamp") || strings.Contains(firstFailure.Status.Message, "Troubleshooting") {
+		t.Fatalf("first status message includes volatile SDK text: %q", firstFailure.Status.Message)
+	}
+	assertEventContains(t, drainEvents(recorder), "Warning RuleError "+wantMessage)
+	if statusUpdates != 1 {
+		t.Fatalf("status updates after first volatile CreateRule failure = %d, want 1", statusUpdates)
+	}
+
+	result, err = reconcileEventTriggerResult(t, ctx, reconciler, trigger)
+	if err != nil {
+		t.Fatalf("second reconcile returned error = %v, want delayed requeue without raw error", err)
+	}
+	if result.RequeueAfter != functionEventTriggerOCIFailureRequeue {
+		t.Fatalf("second RequeueAfter = %s, want %s", result.RequeueAfter, functionEventTriggerOCIFailureRequeue)
+	}
+	secondFailure := getEventTrigger(t, ctx, k8sClient, trigger)
+	if secondFailure.Status.Message != wantMessage {
+		t.Fatalf("second status message = %q, want %q", secondFailure.Status.Message, wantMessage)
+	}
+	if statusUpdates != 1 {
+		t.Fatalf("status updates after second volatile CreateRule failure = %d, want 1", statusUpdates)
+	}
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Fatalf("events after second normalized CreateRule failure = %q, want none", events)
+	}
+}
+
+func TestFunctionEventTriggerPrimaryPredicateIgnoresStatusOnlyUpdate(t *testing.T) {
+	oldTrigger := objectCreatedTrigger("object-created-trigger", "default", "managed-hello")
+	oldTrigger.Generation = 2
+	oldTrigger.ResourceVersion = "10"
+	oldTrigger.Status.Phase = functionsv1alpha1.FunctionEventTriggerPhasePending
+	oldTrigger.Status.Message = "waiting"
+
+	newTrigger := oldTrigger.DeepCopy()
+	newTrigger.ResourceVersion = "11"
+	newTrigger.Status.Phase = functionsv1alpha1.FunctionEventTriggerPhaseError
+	newTrigger.Status.Message = "create OCI Events rule failed"
+
+	if functionEventTriggerPrimaryPredicate().Update(event.UpdateEvent{ObjectOld: oldTrigger, ObjectNew: newTrigger}) {
+		t.Fatalf("status-only update passed primary predicate, want it filtered")
+	}
+
+	specChanged := newTrigger.DeepCopy()
+	specChanged.Generation = 3
+	if !functionEventTriggerPrimaryPredicate().Update(event.UpdateEvent{ObjectOld: newTrigger, ObjectNew: specChanged}) {
+		t.Fatalf("generation update was filtered, want it to trigger reconcile")
+	}
+
+	deleting := newTrigger.DeepCopy()
+	deletionTime := metav1.Now()
+	deleting.SetDeletionTimestamp(&deletionTime)
+	if !functionEventTriggerPrimaryPredicate().Update(event.UpdateEvent{ObjectOld: newTrigger, ObjectNew: deleting}) {
+		t.Fatalf("deletion timestamp update was filtered, want finalizer cleanup to trigger reconcile")
+	}
+}
+
+func TestFunctionEventTriggerFunctionWatchMapsReferencingTriggers(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := readyEventTriggerFunction("managed-hello", "default")
+	referencing := objectCreatedTrigger("object-created-trigger", "default", function.Name)
+	other := objectCreatedTrigger("other-trigger", "default", "other-function")
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionEventTrigger{}).
+		WithObjects(function, referencing, other).
+		Build()
+	reconciler := &FunctionEventTriggerReconciler{Client: k8sClient, Scheme: scheme}
+
+	requests := reconciler.functionToEventTriggerRequests(ctx, function)
+	if len(requests) != 1 {
+		t.Fatalf("requests = %v, want one referencing trigger", requests)
+	}
+	want := types.NamespacedName{Name: referencing.Name, Namespace: referencing.Namespace}
+	if requests[0].NamespacedName != want {
+		t.Fatalf("request = %s, want %s", requests[0].NamespacedName, want)
 	}
 }
 
@@ -500,10 +687,22 @@ func getEventTrigger(t *testing.T, ctx context.Context, k8sClient client.Client,
 	return updated
 }
 
+func volatileCreateRuleServiceError(opcRequestID, timestamp string) string {
+	return fmt.Sprintf(`create OCI Events rule "object-created-trigger": Error returned by Events Service. Http Status Code: 404. Error Code: NotAuthorizedOrNotFound. Opc request id: %s. Message: Authorization failed or requested resource not found.
+Operation Name: CreateRule
+Timestamp: %s
+Client Version: Oracle-GoSDK/65.118.0
+Request Endpoint: POST https://events.me-jeddah-1.oci.oraclecloud.com/20181201/rules
+Troubleshooting Tips: See https://docs.oracle.com/iaas/Content/API/References/apierrors.htm for more information about resolving this error.
+To get more info on the failing request, you can set OCI_GO_SDK_DEBUG env var to info or higher level to log the request/response details.
+If you are unable to resolve this Events issue, please contact Oracle support and provide them this full error message.`, opcRequestID, timestamp)
+}
+
 type fakeEventRuleManager struct {
 	existingRuleID string
 	emitUpdate     bool
 	ensureErr      error
+	ensureErrs     []error
 	createCalls    int
 	deleteCalls    int
 	deletedRuleID  string
@@ -512,6 +711,13 @@ type fakeEventRuleManager struct {
 
 func (f *fakeEventRuleManager) EnsureRule(_ context.Context, desired eventtrigger.DesiredRule) (eventtrigger.RuleState, error) {
 	f.desired = append(f.desired, desired)
+	if len(f.ensureErrs) > 0 {
+		err := f.ensureErrs[0]
+		if len(f.ensureErrs) > 1 {
+			f.ensureErrs = f.ensureErrs[1:]
+		}
+		return eventtrigger.RuleState{RuleID: f.existingRuleID}, err
+	}
 	if f.ensureErr != nil {
 		return eventtrigger.RuleState{RuleID: f.existingRuleID}, f.ensureErr
 	}

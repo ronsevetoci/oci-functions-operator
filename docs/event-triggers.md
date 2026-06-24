@@ -31,11 +31,18 @@ spec:
     - com.oraclecloud.objectstorage.createobject
     data:
       additionalDetails:
-        bucketName:
-        - <BUCKET_NAME>
+        bucketName: <BUCKET_NAME>
 ```
 
 The controller stores the OCI Events Rule OCID in `status.ruleId`.
+
+`condition.eventType` is a Kubernetes list field. For the common single-value case, the controller renders one item as the scalar OCI Events condition value:
+
+```json
+{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":"my-bucket"}}}
+```
+
+Structured `condition.data` also renders single-item arrays as scalar values for compatibility with OCI Events. Multiple event types or multiple values for one data attribute are rejected with `InvalidCondition`; create separate `FunctionEventTrigger` resources for multiple values.
 
 ## Raw Conditions
 
@@ -45,16 +52,16 @@ For exact OCI Events condition JSON, use `condition.rawJson` instead of the stru
 condition:
   rawJson: |
     {
-      "eventType": ["com.oraclecloud.objectstorage.createobject"],
+      "eventType": "com.oraclecloud.objectstorage.createobject",
       "data": {
         "additionalDetails": {
-          "bucketName": ["my-bucket"]
+          "bucketName": "my-bucket"
         }
       }
     }
 ```
 
-`rawJson` is mutually exclusive with `eventType` and `data`.
+`rawJson` is mutually exclusive with `eventType` and `data`. It must already be valid OCI Events condition JSON, so use scalar values rather than arrays for single event types or data attributes.
 
 ## Deletion Policy
 
@@ -138,6 +145,8 @@ Missing Events IAM permission:
 Invalid event condition JSON:
 
 - `condition.rawJson` must be a JSON object.
+- OCI Events condition values must be scalar strings in the common single-value case; arrays are rejected before calling OCI.
+- Structured `condition.eventType` currently accepts one value. Use separate triggers for multiple event types.
 - Structured `condition.data` must be valid object-shaped YAML/JSON.
 - `status.conditions[?type=="RuleReady"]` uses reason `InvalidCondition` when validation fails.
 

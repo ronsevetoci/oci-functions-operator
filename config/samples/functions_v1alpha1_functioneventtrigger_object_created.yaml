@@ -15,5 +15,4 @@ spec:
     - com.oraclecloud.objectstorage.createobject
     data:
       additionalDetails:
-        bucketName:
-        - <BUCKET_NAME>
+        bucketName: <BUCKET_NAME>

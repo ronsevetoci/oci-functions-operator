@@ -147,7 +147,7 @@ func validDesiredRule() DesiredRule {
 		DisplayName:   "object-created-trigger",
 		Description:   "Invoke managed-hello when objects are created",
 		IsEnabled:     true,
-		ConditionJSON: `{"eventType":["com.oraclecloud.objectstorage.createobject"],"data":{"additionalDetails":{"bucketName":["my-bucket"]}}}`,
+		ConditionJSON: `{"eventType":"com.oraclecloud.objectstorage.createobject","data":{"additionalDetails":{"bucketName":"my-bucket"}}}`,
 		FunctionID:    "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid",
 		TriggerName:   "object-created-trigger",
 		Namespace:     "default",
