@@ -14,20 +14,22 @@ This is intentionally not modeled as Pods or Kubernetes Jobs. OCI Functions are 
 
 ## MVP Scope
 
-The MVP introduces two namespaced resources in `functions.oci.oracle.com/v1alpha1`:
+The operator currently exposes three namespaced resources in `functions.oci.oracle.com/v1alpha1`:
 
 - `Function`: either references an existing OCI Function by `spec.functionId` and `spec.invokeEndpoint`, or manages an OCI Functions application/function from desired config.
 - `FunctionJob`: references a `Function`, carries inline JSON payloads, controls per-reconcile parallelism, applies retry limits, and records status aggregation.
+- `FunctionEventTrigger`: manages an OCI Events Rule that invokes a referenced `Function`.
 
 Implemented invoker modes:
 
 - `fake`: deterministic local success path for development and demos.
-- `oci`: OCI Go SDK-backed lifecycle and invocation.
+- `oci`: OCI Go SDK-backed lifecycle, invocation, and OCI Events rule management.
 
 ## Non-Goals
 
 - Cron scheduling.
-- Event source integration.
+- DAG/workflow orchestration.
+- Kubernetes watch triggers.
 - Native Kubernetes Job compatibility.
 - Pod templates, volumes, sidecars, init containers, GPUs, or privileged execution.
 - Image publishing, function source builds, or deployment packaging.
@@ -36,12 +38,13 @@ Implemented invoker modes:
 
 ## Architecture
 
-The controller manager runs two reconcilers:
+The controller manager runs three reconcilers:
 
 - `FunctionReconciler` resolves a `Function` into a ready, pending, or error status. Existing function references validate required fields; managed functions ensure an OCI Functions application and function.
 - `FunctionJobReconciler` resolves the referenced `Function`, initializes per-payload status, invokes runnable payloads through `invoker.Interface`, aggregates status, and emits events.
+- `FunctionEventTriggerReconciler` waits for the referenced `Function` to become Ready with `status.functionId`, then creates or updates an OCI Events Rule with a FAAS action targeting that Function.
 
-OCI SDK usage is isolated under `internal/invoker` and `internal/lifecycle`. Controllers depend only on small internal interfaces:
+OCI SDK usage is isolated under `internal/invoker`, `internal/lifecycle`, and `internal/eventtrigger`. Controllers depend only on small internal interfaces:
 
 ```go
 type Interface interface {
@@ -50,6 +53,11 @@ type Interface interface {
 
 type Manager interface {
     EnsureFunction(ctx context.Context, desired DesiredFunction) (FunctionState, error)
+}
+
+type EventTriggerManager interface {
+    EnsureRule(ctx context.Context, desired DesiredRule) (RuleState, error)
+    DeleteRule(ctx context.Context, ruleID string) (RuleState, error)
 }
 ```
 

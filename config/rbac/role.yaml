@@ -14,15 +14,17 @@ rules:
 - apiGroups:
   - functions.oci.oracle.com
   resources:
-  - functionjobs
-  - functions
+  - functioneventtriggers
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - functions.oci.oracle.com
   resources:
+  - functioneventtriggers/finalizers
   - functionjobs/finalizers
   - functions/finalizers
   verbs:
@@ -30,9 +32,19 @@ rules:
 - apiGroups:
   - functions.oci.oracle.com
   resources:
+  - functioneventtriggers/status
   - functionjobs/status
   - functions/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - functions.oci.oracle.com
+  resources:
+  - functionjobs
+  - functions
+  verbs:
+  - get
+  - list
+  - watch

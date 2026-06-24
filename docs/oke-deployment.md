@@ -1,12 +1,14 @@
 # Deploy The OCI Functions Operator On OKE
 
-This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
+Helm is the recommended OKE installation path. See [Helm install](helm-install.md) for normal installs and upgrades.
+
+This Kustomize guide is retained as a development/internal deployment path. OCI mode uses OKE Workload Identity by default and does not mount a developer `~/.oci/config` file or PEM key.
 
 ## What Gets Installed
 
-- CRDs for `Function` and `FunctionJob`.
+- CRDs for `Function`, `FunctionJob`, and `FunctionEventTrigger`.
 - A controller manager Deployment in `oci-functions-operator-system`.
-- RBAC for watching `Function` and `FunctionJob` resources and writing status/events.
+- RBAC for watching `Function`, `FunctionJob`, and `FunctionEventTrigger` resources and writing status/events.
 - OCI mode configured for OKE Workload Identity.
 
 ## Prerequisites
@@ -14,7 +16,7 @@ This guide deploys the current MVP to Oracle Kubernetes Engine (OKE). OCI mode u
 - `kubectl` points at the target OKE cluster.
 - The operator image is reachable by OKE. The current demo image is `ghcr.io/ronsevetoci/oci-functions-operator/controller:dev`.
 - OKE Workload Identity is enabled/available for the cluster and service account. Use an OKE cluster type/version that supports Workload Identity in your tenancy.
-- OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources and invoke functions.
+- OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources, manage OCI Events rules, and invoke functions.
 - For managed mode: a compartment OCID, subnet OCIDs, optional NSG OCIDs, and a same-region OCIR function image OCI Functions can pull.
 - For existing mode: an existing function OCID and that function's invoke endpoint.
 
@@ -25,7 +27,7 @@ From the repository root:
 ```sh
 make manifests
 kubectl apply -k config/crd
-kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com
+kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com
 ```
 
 ## Deploy The Manager With Fake Mode
@@ -87,6 +89,19 @@ Allow any-user to manage fn-functions in compartment <functions-compartment> whe
   request.principal.cluster_id = '<oke-cluster-ocid>'
 }
 ```
+
+For `FunctionEventTrigger`, the same workload principal also needs permission to manage OCI Events rules in the compartment where triggers create rules:
+
+```text
+Allow any-user to manage cloudevents-rules in compartment <events-rule-compartment> where all {
+  request.principal.type = 'workload',
+  request.principal.namespace = 'oci-functions-operator-system',
+  request.principal.service_account = 'oci-functions-operator-controller-manager',
+  request.principal.cluster_id = '<oke-cluster-ocid>'
+}
+```
+
+Depending on your tenancy policy model, OCI Events may also require permission for the Events service to invoke the target Function. If a rule is created but matching events do not invoke the function, check for an Events-service-to-Functions invoke policy in the target function compartment.
 
 If the application subnets live in a different compartment, grant network use there:
 
@@ -372,7 +387,7 @@ Checks:
 
 - Reapply RBAC: `kubectl apply -k config/rbac`.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
-- Confirm generated `ClusterRole` includes `functions/status`, `functionjobs/status`, and core `events`.
+- Confirm generated `ClusterRole` includes `functions/status`, `functionjobs/status`, `functioneventtriggers/status`, and core `events`.
 - Reapply the full default or OCI overlay if RBAC drifted.
 
 ## Local Config Auth
@@ -381,4 +396,4 @@ Checks:
 
 ## Current MVP Boundary
 
-This deployment supports existing Function references, managed application/function reconciliation, and `FunctionJob` invocation. Image build/push workflows, Function deletion, event sources, schedules, and Function deployment packaging remain out of scope.
+This deployment supports existing Function references, managed application/function reconciliation, `FunctionJob` invocation, and OCI Events rule triggers through `FunctionEventTrigger`. Image build/push workflows, Function deletion, schedules, Kubernetes watch triggers, and Function deployment packaging remain out of scope.

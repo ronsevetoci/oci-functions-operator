@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/oracle/oci-functions-operator/internal/eventtrigger"
 	"github.com/oracle/oci-functions-operator/internal/invoker"
 	"github.com/oracle/oci-functions-operator/internal/lifecycle"
 )
@@ -23,6 +24,10 @@ var newOCIInvoker = func() (invoker.Interface, error) {
 
 var newOCILifecycleManager = func() (lifecycle.Manager, error) {
 	return lifecycle.NewOCIFromEnvironment()
+}
+
+var newOCIEventTriggerManager = func() (eventtrigger.Manager, error) {
+	return eventtrigger.NewOCIFromEnvironment()
 }
 
 func selectInvoker(mode string) (invoker.Interface, string, error) {
@@ -56,6 +61,22 @@ func selectLifecycleManager(mode string) (lifecycle.Manager, error) {
 		return nil, nil
 	case invokerModeOCI:
 		return newOCILifecycleManager()
+	default:
+		return nil, fmt.Errorf("unsupported %s %q; supported values are %q and %q", invokerModeEnv, mode, invokerModeFake, invokerModeOCI)
+	}
+}
+
+func selectEventTriggerManager(mode string) (eventtrigger.Manager, error) {
+	normalizedMode := strings.ToLower(strings.TrimSpace(mode))
+	if normalizedMode == "" {
+		normalizedMode = invokerModeFake
+	}
+
+	switch normalizedMode {
+	case invokerModeFake:
+		return nil, nil
+	case invokerModeOCI:
+		return newOCIEventTriggerManager()
 	default:
 		return nil, fmt.Errorf("unsupported %s %q; supported values are %q and %q", invokerModeEnv, mode, invokerModeFake, invokerModeOCI)
 	}

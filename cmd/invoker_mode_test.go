@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oracle/oci-functions-operator/internal/eventtrigger"
 	"github.com/oracle/oci-functions-operator/internal/invoker"
 	"github.com/oracle/oci-functions-operator/internal/lifecycle"
 )
@@ -148,6 +149,51 @@ func TestSelectLifecycleManagerPropagatesOCIConstructionError(t *testing.T) {
 	}
 }
 
+func TestSelectEventTriggerManagerDefaultsToNilForFake(t *testing.T) {
+	manager, err := selectEventTriggerManager("")
+	if err != nil {
+		t.Fatalf("selectEventTriggerManager returned error: %v", err)
+	}
+	if manager != nil {
+		t.Fatalf("manager = %#v, want nil for fake mode", manager)
+	}
+}
+
+func TestSelectEventTriggerManagerSupportsOCI(t *testing.T) {
+	expectedManager := fakeEventTriggerManager{}
+	resetEventTriggerManager := replaceOCIEventTriggerManager(func() (eventtrigger.Manager, error) {
+		return expectedManager, nil
+	})
+	defer resetEventTriggerManager()
+
+	manager, err := selectEventTriggerManager(invokerModeOCI)
+	if err != nil {
+		t.Fatalf("selectEventTriggerManager returned error: %v", err)
+	}
+	if manager != expectedManager {
+		t.Fatalf("manager = %#v, want fake event trigger manager", manager)
+	}
+}
+
+func TestSelectEventTriggerManagerPropagatesOCIConstructionError(t *testing.T) {
+	expectedErr := errors.New("missing workload identity")
+	resetEventTriggerManager := replaceOCIEventTriggerManager(func() (eventtrigger.Manager, error) {
+		return nil, expectedErr
+	})
+	defer resetEventTriggerManager()
+
+	manager, err := selectEventTriggerManager(invokerModeOCI)
+	if err == nil {
+		t.Fatalf("selectEventTriggerManager returned nil error, want OCI construction error")
+	}
+	if manager != nil {
+		t.Fatalf("manager = %#v, want nil on error", manager)
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("error = %v, want %v", err, expectedErr)
+	}
+}
+
 func replaceOCIInvoker(replacement func() (invoker.Interface, error)) func() {
 	previous := newOCIInvoker
 	newOCIInvoker = replacement
@@ -164,8 +210,26 @@ func replaceOCILifecycleManager(replacement func() (lifecycle.Manager, error)) f
 	}
 }
 
+func replaceOCIEventTriggerManager(replacement func() (eventtrigger.Manager, error)) func() {
+	previous := newOCIEventTriggerManager
+	newOCIEventTriggerManager = replacement
+	return func() {
+		newOCIEventTriggerManager = previous
+	}
+}
+
 type fakeLifecycleManager struct{}
 
 func (fakeLifecycleManager) EnsureFunction(context.Context, lifecycle.DesiredFunction) (lifecycle.FunctionState, error) {
 	return lifecycle.FunctionState{}, nil
+}
+
+type fakeEventTriggerManager struct{}
+
+func (fakeEventTriggerManager) EnsureRule(context.Context, eventtrigger.DesiredRule) (eventtrigger.RuleState, error) {
+	return eventtrigger.RuleState{}, nil
+}
+
+func (fakeEventTriggerManager) DeleteRule(context.Context, string) (eventtrigger.RuleState, error) {
+	return eventtrigger.RuleState{}, nil
 }

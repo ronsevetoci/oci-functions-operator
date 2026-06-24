@@ -52,6 +52,11 @@ func main() {
 		setupLog.Error(err, "unable to configure Function lifecycle manager")
 		os.Exit(1)
 	}
+	eventTriggerManager, err := selectEventTriggerManager(invokerMode)
+	if err != nil {
+		setupLog.Error(err, "unable to configure FunctionEventTrigger manager")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -84,6 +89,16 @@ func main() {
 		Recorder: mgr.GetEventRecorderFor("functionjob-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FunctionJob")
+		os.Exit(1)
+	}
+
+	if err = (&controller.FunctionEventTriggerReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Manager:  eventTriggerManager,
+		Recorder: mgr.GetEventRecorderFor("functioneventtrigger-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "FunctionEventTrigger")
 		os.Exit(1)
 	}
 

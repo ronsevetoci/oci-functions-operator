@@ -17,6 +17,18 @@ manifests: controller-gen
 test:
 	go test ./...
 
+.PHONY: helm-chart
+helm-chart: manifests
+	mkdir -p charts/oci-functions-operator/crds
+	cp config/crd/bases/functions.oci.oracle.com_functions.yaml charts/oci-functions-operator/crds/functions.functions.oci.oracle.com.yaml
+	cp config/crd/bases/functions.oci.oracle.com_functionjobs.yaml charts/oci-functions-operator/crds/functionjobs.functions.oci.oracle.com.yaml
+	cp config/crd/bases/functions.oci.oracle.com_functioneventtriggers.yaml charts/oci-functions-operator/crds/functioneventtriggers.functions.oci.oracle.com.yaml
+
+.PHONY: helm-template
+helm-template: helm-chart
+	helm template oci-functions-operator charts/oci-functions-operator \
+		--namespace oci-functions-operator-system
+
 .PHONY: fmt
 fmt:
 	go fmt ./...
