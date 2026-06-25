@@ -173,6 +173,85 @@ func TestEnsureFunctionReturnsApplicationNSGUpdateFailure(t *testing.T) {
 	}
 }
 
+func TestDeleteManagedFunctionDeletesFunctionByID(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteManagedFunction(ctx, ManagedFunctionDeleteTarget{
+		Region:     "me-jeddah-1",
+		FunctionID: fakeFunctionID,
+	})
+	if err != nil {
+		t.Fatalf("DeleteManagedFunction returned error: %v", err)
+	}
+	if fakeClient.region != "me-jeddah-1" {
+		t.Fatalf("region = %q, want me-jeddah-1", fakeClient.region)
+	}
+	if fakeClient.deletedFunctionID != fakeFunctionID {
+		t.Fatalf("deletedFunctionID = %q, want %q", fakeClient.deletedFunctionID, fakeFunctionID)
+	}
+	if !state.Deleted || state.FunctionID != fakeFunctionID {
+		t.Fatalf("state = %#v, want deleted function ID", state)
+	}
+	if !hasLifecycleEvent(state.Events, EventTypeNormal, "ManagedFunctionDeleted") {
+		t.Fatalf("events = %#v, want ManagedFunctionDeleted", state.Events)
+	}
+}
+
+func TestDeleteManagedFunctionResolvesFunctionWhenStatusFunctionIDMissing(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		functions: []ocifunctions.FunctionSummary{{
+			Id:             common.String(fakeFunctionID),
+			DisplayName:    common.String("hello"),
+			LifecycleState: ocifunctions.FunctionLifecycleStateActive,
+		}},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteManagedFunction(ctx, ManagedFunctionDeleteTarget{
+		Region:          "me-jeddah-1",
+		CompartmentID:   "ocid1.compartment.oc1..exampleuniqueid",
+		ApplicationName: "demo-app",
+		DisplayName:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("DeleteManagedFunction returned error: %v", err)
+	}
+	if fakeClient.deletedFunctionID != fakeFunctionID {
+		t.Fatalf("deletedFunctionID = %q, want resolved %q", fakeClient.deletedFunctionID, fakeFunctionID)
+	}
+	if state.ApplicationID != fakeApplicationID || state.FunctionID != fakeFunctionID {
+		t.Fatalf("state = %#v, want resolved application/function IDs", state)
+	}
+}
+
+func TestDeleteManagedFunctionTreatsNotFoundAsSuccessfulCleanup(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{deleteFunctionErr: fakeServiceError{status: 404, code: "NotAuthorizedOrNotFound", message: "not found"}}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteManagedFunction(ctx, ManagedFunctionDeleteTarget{
+		Region:     "me-jeddah-1",
+		FunctionID: fakeFunctionID,
+	})
+	if err != nil {
+		t.Fatalf("DeleteManagedFunction returned error for not found: %v", err)
+	}
+	if fakeClient.deletedFunctionID != fakeFunctionID {
+		t.Fatalf("deletedFunctionID = %q, want %q", fakeClient.deletedFunctionID, fakeFunctionID)
+	}
+	if !state.Deleted {
+		t.Fatalf("state.Deleted = false, want true for idempotent not-found cleanup")
+	}
+}
+
 const (
 	fakeApplicationID  = "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid"
 	fakeFunctionID     = "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid"
@@ -188,6 +267,9 @@ type fakeManagementClient struct {
 	updatedApplication   ocifunctions.UpdateApplicationDetails
 	updatedApplicationID string
 	createdFunction      ocifunctions.CreateFunctionDetails
+	functions            []ocifunctions.FunctionSummary
+	deletedFunctionID    string
+	deleteFunctionErr    error
 }
 
 func (f *fakeManagementClient) SetRegion(region string) {
@@ -239,7 +321,7 @@ func (f *fakeManagementClient) UpdateApplication(_ context.Context, request ocif
 }
 
 func (f *fakeManagementClient) ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error) {
-	return ocifunctions.ListFunctionsResponse{}, nil
+	return ocifunctions.ListFunctionsResponse{Items: f.functions}, nil
 }
 
 func (f *fakeManagementClient) CreateFunction(_ context.Context, request ocifunctions.CreateFunctionRequest) (ocifunctions.CreateFunctionResponse, error) {
@@ -267,6 +349,54 @@ func (f *fakeManagementClient) GetFunction(context.Context, ocifunctions.GetFunc
 
 func (f *fakeManagementClient) UpdateFunction(context.Context, ocifunctions.UpdateFunctionRequest) (ocifunctions.UpdateFunctionResponse, error) {
 	return ocifunctions.UpdateFunctionResponse{}, nil
+}
+
+func (f *fakeManagementClient) DeleteFunction(_ context.Context, request ocifunctions.DeleteFunctionRequest) (ocifunctions.DeleteFunctionResponse, error) {
+	f.deletedFunctionID = stringValue(request.FunctionId)
+	if f.deleteFunctionErr != nil {
+		return ocifunctions.DeleteFunctionResponse{}, f.deleteFunctionErr
+	}
+	return ocifunctions.DeleteFunctionResponse{}, nil
+}
+
+func newTestOCIManager(t *testing.T, fakeClient *fakeManagementClient) *OCI {
+	t.Helper()
+	manager, err := NewOCI(OCIOptions{
+		ConfigProvider: common.NewRawConfigurationProvider("tenancy", "user", "me-jeddah-1", "fingerprint", "private-key", nil),
+		ClientFactory: func(common.ConfigurationProvider) (functionsManagementClient, error) {
+			return fakeClient, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOCI returned error: %v", err)
+	}
+	return manager
+}
+
+type fakeServiceError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (f fakeServiceError) Error() string {
+	return f.message
+}
+
+func (f fakeServiceError) GetHTTPStatusCode() int {
+	return f.status
+}
+
+func (f fakeServiceError) GetMessage() string {
+	return f.message
+}
+
+func (f fakeServiceError) GetCode() string {
+	return f.code
+}
+
+func (f fakeServiceError) GetOpcRequestID() string {
+	return "opc-request-id"
 }
 
 func validDesiredFunction() DesiredFunction {

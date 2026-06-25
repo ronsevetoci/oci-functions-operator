@@ -34,6 +34,17 @@ const (
 	FunctionPhaseError   FunctionPhase = "Error"
 )
 
+// FunctionDeletionPolicy controls OCI resource cleanup when a Function CR is deleted.
+// +kubebuilder:validation:Enum=Retain;Delete
+type FunctionDeletionPolicy string
+
+const (
+	// FunctionDeletionPolicyRetain leaves OCI resources untouched when the Kubernetes Function is deleted.
+	FunctionDeletionPolicyRetain FunctionDeletionPolicy = "Retain"
+	// FunctionDeletionPolicyDelete deletes the managed OCI Function when the Kubernetes Function is deleted.
+	FunctionDeletionPolicyDelete FunctionDeletionPolicy = "Delete"
+)
+
 // FunctionSpec defines the desired state of Function.
 // +kubebuilder:validation:XValidation:rule="has(self.functionId) || has(self.existingFunctionOcid) || has(self.config)",message="one of spec.functionId, spec.existingFunctionOcid, or spec.config is required"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && (has(self.functionId) || has(self.existingFunctionOcid)))",message="spec.config is mutually exclusive with existing function references"
@@ -67,6 +78,13 @@ type FunctionSpec struct {
 	// Config describes desired function configuration for managed lifecycle.
 	// +optional
 	Config *FunctionConfig `json:"config,omitempty"`
+
+	// DeletionPolicy controls what happens to OCI resources when this Kubernetes Function is deleted.
+	// Defaults to Retain for safety. Delete is honored only for Managed mode and deletes the managed OCI Function.
+	// The OCI Functions application is retained in this MVP.
+	// +optional
+	// +kubebuilder:default=Retain
+	DeletionPolicy FunctionDeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // FunctionConfig contains the minimal OCI Functions configuration this API manages.
@@ -222,6 +240,14 @@ func (f *Function) SetCondition(condition metav1.Condition) {
 // IsReady reports whether the Function is ready to invoke.
 func (f *Function) IsReady() bool {
 	return meta.IsStatusConditionTrue(f.Status.Conditions, FunctionConditionReady)
+}
+
+// DeletionPolicy returns the effective deletion policy when API defaulting has not run.
+func (f *Function) DeletionPolicy() FunctionDeletionPolicy {
+	if f.Spec.DeletionPolicy == FunctionDeletionPolicyDelete {
+		return FunctionDeletionPolicyDelete
+	}
+	return FunctionDeletionPolicyRetain
 }
 
 func init() {

@@ -53,6 +53,8 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 
 Existing mode requires `spec.functionId` and `spec.invokeEndpoint` on the `Function`. Managed mode uses `spec.config` to create/update the OCI Functions application and function, then writes `status.applicationId`, `status.functionId`, and `status.invokeEndpoint`.
 
+`Function.spec.deletionPolicy` defaults to `Retain`. Deleting a managed `Function` with `Retain` leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. The OCI Functions application is retained in this MVP. Existing mode never deletes OCI resources.
+
 ## Local Fake Demo
 
 Install or refresh generated manifests:

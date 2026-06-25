@@ -224,6 +224,10 @@ func (fakeLifecycleManager) EnsureFunction(context.Context, lifecycle.DesiredFun
 	return lifecycle.FunctionState{}, nil
 }
 
+func (fakeLifecycleManager) DeleteManagedFunction(context.Context, lifecycle.ManagedFunctionDeleteTarget) (lifecycle.FunctionDeletionState, error) {
+	return lifecycle.FunctionDeletionState{}, nil
+}
+
 type fakeEventTriggerManager struct{}
 
 func (fakeEventTriggerManager) EnsureRule(context.Context, eventtrigger.DesiredRule) (eventtrigger.RuleState, error) {

@@ -332,6 +332,197 @@ func TestFunctionReconcilerManagedModeRecordsApplicationNSGUpdateFailure(t *test
 	assertEventContains(t, drainEvents(recorder), "Warning ApplicationNSGUpdateFailed")
 }
 
+func TestFunctionReconcilerManagedRetainDoesNotDeleteOCIOnCRDeletion(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	function.Finalizers = []string{functionFinalizer}
+	function.Status.FunctionID = "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid"
+	manager := &fakeLifecycleManager{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	if err := client.Delete(ctx, function); err != nil {
+		t.Fatalf("delete Function: %v", err)
+	}
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if manager.deleteCalls != 0 {
+		t.Fatalf("deleteCalls = %d, want 0 for Retain policy", manager.deleteCalls)
+	}
+	var updated functionsv1alpha1.Function
+	err = client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated)
+	if err == nil {
+		t.Fatalf("Function still exists after finalizer removal, finalizers=%#v", updated.Finalizers)
+	}
+}
+
+func TestFunctionReconcilerManagedDeleteDeletesOCIAndRemovesFinalizer(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	function.Spec.DeletionPolicy = functionsv1alpha1.FunctionDeletionPolicyDelete
+	function.Finalizers = []string{functionFinalizer}
+	function.Status.FunctionID = "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid"
+	manager := &fakeLifecycleManager{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	if err := client.Delete(ctx, function); err != nil {
+		t.Fatalf("delete Function: %v", err)
+	}
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if manager.deleteCalls != 1 {
+		t.Fatalf("deleteCalls = %d, want 1", manager.deleteCalls)
+	}
+	if manager.deleteTarget.FunctionID != function.Status.FunctionID {
+		t.Fatalf("delete target function ID = %q, want %q", manager.deleteTarget.FunctionID, function.Status.FunctionID)
+	}
+	var updated functionsv1alpha1.Function
+	err = client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated)
+	if err == nil {
+		t.Fatalf("Function still exists after successful delete, finalizers=%#v", updated.Finalizers)
+	}
+}
+
+func TestFunctionReconcilerExistingDeletePolicyNeverDeletesOCIResources(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := &functionsv1alpha1.Function{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: "default"},
+		Spec: functionsv1alpha1.FunctionSpec{
+			Mode:           functionsv1alpha1.FunctionModeExisting,
+			FunctionID:     "ocid1.fnfunc.oc1.iad.exampleuniqueid",
+			InvokeEndpoint: "https://functions.us-ashburn-1.oci.oraclecloud.com",
+			DeletionPolicy: functionsv1alpha1.FunctionDeletionPolicyDelete,
+		},
+	}
+	manager := &fakeLifecycleManager{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if manager.deleteCalls != 0 {
+		t.Fatalf("deleteCalls = %d, want 0 for Existing mode", manager.deleteCalls)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "Existing mode never deletes OCI resources") {
+		t.Fatalf("message = %q, want existing-mode delete policy guidance", updated.Status.Message)
+	}
+}
+
+func TestFunctionReconcilerManagedDeleteTreatsMissingOCIFunctionAsSuccessfulCleanup(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	function.Spec.DeletionPolicy = functionsv1alpha1.FunctionDeletionPolicyDelete
+	function.Finalizers = []string{functionFinalizer}
+	function.Status.FunctionID = "ocid1.fnfunc.oc1.me-jeddah-1.missing"
+	manager := &fakeLifecycleManager{
+		deleteState: lifecycle.FunctionDeletionState{
+			FunctionID: function.Status.FunctionID,
+			Message:    "Managed OCI Function was not found; nothing to delete. OCI Functions application retained.",
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	if err := client.Delete(ctx, function); err != nil {
+		t.Fatalf("delete Function: %v", err)
+	}
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if manager.deleteCalls != 1 {
+		t.Fatalf("deleteCalls = %d, want 1", manager.deleteCalls)
+	}
+	var updated functionsv1alpha1.Function
+	err = client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated)
+	if err == nil {
+		t.Fatalf("Function still exists after not-found cleanup, finalizers=%#v", updated.Finalizers)
+	}
+}
+
+func TestFunctionReconcilerManagedDeleteBacksOffAfterFailedCleanupStatus(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	function.Spec.DeletionPolicy = functionsv1alpha1.FunctionDeletionPolicyDelete
+	function.Finalizers = []string{functionFinalizer}
+	function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+	function.Status.Message = "Delete managed OCI Function failed: 404 NotAuthorizedOrNotFound: Authorization failed or requested resource not found."
+	now := metav1.Now()
+	function.Status.LastSyncTime = &now
+	meta.SetStatusCondition(&function.Status.Conditions, metav1.Condition{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ManagedFunctionDeleteFailed",
+		Message:            function.Status.Message,
+		ObservedGeneration: function.Generation,
+		LastTransitionTime: now,
+	})
+	manager := &fakeLifecycleManager{deleteErr: errors.New("should not be called during backoff")}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	if err := client.Delete(ctx, function); err != nil {
+		t.Fatalf("delete Function: %v", err)
+	}
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if manager.deleteCalls != 0 {
+		t.Fatalf("deleteCalls = %d, want 0 while deletion failure backoff is active", manager.deleteCalls)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > functionDeleteRequeue {
+		t.Fatalf("RequeueAfter = %s, want active backoff up to %s", result.RequeueAfter, functionDeleteRequeue)
+	}
+}
+
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 
@@ -364,14 +555,31 @@ func managedFunction(name, namespace string) *functionsv1alpha1.Function {
 }
 
 type fakeLifecycleManager struct {
-	state   lifecycle.FunctionState
-	err     error
-	desired lifecycle.DesiredFunction
-	calls   int
+	state        lifecycle.FunctionState
+	err          error
+	desired      lifecycle.DesiredFunction
+	calls        int
+	deleteState  lifecycle.FunctionDeletionState
+	deleteErr    error
+	deleteTarget lifecycle.ManagedFunctionDeleteTarget
+	deleteCalls  int
 }
 
 func (f *fakeLifecycleManager) EnsureFunction(_ context.Context, desired lifecycle.DesiredFunction) (lifecycle.FunctionState, error) {
 	f.calls++
 	f.desired = desired
 	return f.state, f.err
+}
+
+func (f *fakeLifecycleManager) DeleteManagedFunction(_ context.Context, target lifecycle.ManagedFunctionDeleteTarget) (lifecycle.FunctionDeletionState, error) {
+	f.deleteCalls++
+	f.deleteTarget = target
+	if f.deleteState.Message == "" && f.deleteErr == nil {
+		f.deleteState = lifecycle.FunctionDeletionState{
+			FunctionID: target.FunctionID,
+			Deleted:    true,
+			Message:    "Deleted managed OCI Function " + target.FunctionID + ". OCI Functions application retained.",
+		}
+	}
+	return f.deleteState, f.deleteErr
 }

@@ -34,7 +34,7 @@ Implemented invoker modes:
 - Native Kubernetes Job compatibility.
 - Pod templates, volumes, sidecars, init containers, GPUs, or privileged execution.
 - Image publishing, function source builds, or deployment packaging.
-- Deleting OCI Functions or applications.
+- Deleting OCI Functions applications.
 - Long-running durable queue semantics for large batches.
 
 ## Architecture
@@ -55,6 +55,7 @@ type Interface interface {
 
 type Manager interface {
     EnsureFunction(ctx context.Context, desired DesiredFunction) (FunctionState, error)
+    DeleteManagedFunction(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error)
 }
 
 type EventTriggerManager interface {
@@ -97,6 +98,8 @@ Managed mode config includes region, compartment OCID, application name, subnet 
 OCI Functions pulls the function runtime image during invocation, not as an operator pod. The Functions application subnet must route to Oracle Services Network/OCIR, and any NSGs attached through `spec.config.nsgIds` must allow egress TCP 443 to Oracle Services Network/OCIR. Missing NSG egress can present as `FunctionInvokeImageNotAvailable: Failed to pull function image`, even when the OCIR repository is public or otherwise accessible.
 
 The function runtime image must be an OCI Functions-compatible Fn image in same-region OCIR. For Jeddah, that means `jed.ocir.io/...`. The operator/controller image is separate and may be hosted in GHCR or another registry OKE can pull.
+
+Managed `Function` deletion is opt-in through `spec.deletionPolicy: Delete`. The default `Retain` policy leaves OCI resources untouched. In Delete mode the controller uses a finalizer, deletes the managed OCI Function, treats already-missing OCI Functions as successful cleanup, and retains the OCI Functions application. Existing-mode Functions never delete OCI resources.
 
 ## FunctionJob Lifecycle
 
@@ -143,7 +146,7 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 
 ## Known Limitations
 
-- Managed lifecycle currently reconciles application/function create, application NSG updates, and function update only; deletion and finalizers are not implemented.
+- Managed lifecycle reconciles application/function create, application NSG updates, function update, and opt-in OCI Function deletion. OCI Functions application deletion is not implemented.
 - Existing mode requires the user to provide the invoke endpoint in `spec.invokeEndpoint`.
 - Inline payloads are intended for small demos and operational jobs, not large queues.
 - Large jobs should eventually use Object Storage, Queue, or Streaming payload sources instead of embedding all payloads in the CR.

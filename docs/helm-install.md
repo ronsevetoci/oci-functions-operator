@@ -83,6 +83,8 @@ helm uninstall oci-functions-operator \
 
 Helm uninstall removes namespaced chart resources, ClusterRoles, and bindings, but CRDs installed from `crds/` are intentionally left behind by Helm. Remove CRDs manually only after deleting custom resources you care about.
 
+Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so deleting them leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. The OCI Functions application is retained in this MVP. Existing-mode `Function` resources never delete OCI resources.
+
 ## Image Values
 
 ```yaml

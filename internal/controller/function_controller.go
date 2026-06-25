@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -17,7 +18,16 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	functionFinalizer      = "functions.functions.oci.oracle.com/finalizer"
+	functionDeleteRequeue  = 30 * time.Second
+	functionDeleteEvent    = "ManagedFunctionDeleted"
+	functionDeleteFailed   = "ManagedFunctionDeleteFailed"
+	functionDeleteRetained = "ManagedFunctionRetained"
 )
 
 // FunctionReconciler reconciles a Function object.
@@ -42,6 +52,10 @@ func (r *FunctionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if !function.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &function)
+	}
+
 	now := metav1.Now()
 	desiredObject := function.DeepCopy()
 	desiredObject.Status = functionsv1alpha1.FunctionStatus{
@@ -51,9 +65,28 @@ func (r *FunctionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	result := ctrl.Result{}
 	mode := resolvedFunctionMode(&function)
 
+	if shouldHaveFunctionFinalizer(&function, mode) && !controllerutil.ContainsFinalizer(&function, functionFinalizer) {
+		controllerutil.AddFinalizer(&function, functionFinalizer)
+		if err := r.Update(ctx, &function); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	if !shouldHaveFunctionFinalizer(&function, mode) && controllerutil.ContainsFinalizer(&function, functionFinalizer) {
+		controllerutil.RemoveFinalizer(&function, functionFinalizer)
+		if err := r.Update(ctx, &function); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	switch mode {
 	case functionsv1alpha1.FunctionModeExisting:
-		reconcileExistingFunctionStatus(desiredObject, now)
+		if function.DeletionPolicy() == functionsv1alpha1.FunctionDeletionPolicyDelete {
+			reconcileExistingFunctionDeletePolicyError(desiredObject, now)
+		} else {
+			reconcileExistingFunctionStatus(desiredObject, now)
+		}
 	case functionsv1alpha1.FunctionModeManaged:
 		pending, err := r.reconcileManagedFunctionStatus(ctx, desiredObject, now)
 		if err != nil {
@@ -75,19 +108,82 @@ func (r *FunctionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		})
 	}
 
-	desired := desiredObject.Status
-	if reflect.DeepEqual(function.Status, desired) {
-		return result, nil
-	}
-
-	desired.LastSyncTime = &now
-	function.Status = desired
-	if err := r.Status().Update(ctx, &function); err != nil {
+	patched, err := r.updateFunctionStatusIfChanged(ctx, &function, desiredObject.Status, true)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	logger.V(1).Info("updated Function status", "phase", function.Status.Phase)
+	if patched {
+		logger.V(1).Info("updated Function status", "phase", desiredObject.Status.Phase)
+	}
 	return result, nil
+}
+
+func (r *FunctionReconciler) reconcileDelete(ctx context.Context, function *functionsv1alpha1.Function) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(function, functionFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	mode := resolvedFunctionMode(function)
+	if mode != functionsv1alpha1.FunctionModeManaged || function.DeletionPolicy() != functionsv1alpha1.FunctionDeletionPolicyDelete {
+		r.recordFunctionEvent(function, corev1.EventTypeNormal, functionDeleteRetained, "Retained OCI resources for Function deletion.")
+		controllerutil.RemoveFinalizer(function, functionFinalizer)
+		if err := r.Update(ctx, function); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	now := metav1.Now()
+	if requeueAfter, ok := functionDeletionBackoff(function, now.Time); ok {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	if r.Manager == nil {
+		desired := deletionErrorStatus(function, now, "LifecycleManagerNotConfigured", "Cannot delete managed OCI Function because the lifecycle manager is not configured.")
+		patched, err := r.updateFunctionStatusIfChanged(ctx, function, desired, true)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if patched {
+			r.recordFunctionEvent(function, corev1.EventTypeWarning, functionDeleteFailed, desired.Message)
+		}
+		return ctrl.Result{RequeueAfter: functionDeleteRequeue}, nil
+	}
+
+	if !isFunctionDeleteFailure(function) {
+		deleting := function.Status
+		deleting.ObservedGeneration = function.Generation
+		deleting.Phase = functionsv1alpha1.FunctionPhasePending
+		deleting.Message = "Deleting managed OCI Function; OCI Functions application will be retained."
+		setFunctionReadyCondition(&deleting, metav1.ConditionFalse, "ManagedFunctionDeleting", deleting.Message, function.Generation, now)
+		if _, err := r.updateFunctionStatusIfChanged(ctx, function, deleting, true); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	state, err := r.Manager.DeleteManagedFunction(ctx, managedFunctionDeleteTarget(function))
+	r.recordLifecycleEvents(function, state.Events)
+	if err != nil {
+		message := normalizeFunctionLifecycleError("Delete managed OCI Function", err)
+		desired := deletionErrorStatus(function, now, "ManagedFunctionDeleteFailed", message)
+		patched, updateErr := r.updateFunctionStatusIfChanged(ctx, function, desired, true)
+		if updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		if patched {
+			r.recordFunctionEvent(function, corev1.EventTypeWarning, functionDeleteFailed, message)
+		}
+		return ctrl.Result{RequeueAfter: functionDeleteRequeue}, nil
+	}
+
+	controllerutil.RemoveFinalizer(function, functionFinalizer)
+	if err := r.Update(ctx, function); err != nil {
+		return ctrl.Result{}, err
+	}
+	if state.Message != "" {
+		r.recordFunctionEvent(function, corev1.EventTypeNormal, functionDeleteEvent, state.Message)
+	}
+	return ctrl.Result{}, nil
 }
 
 func reconcileExistingFunctionStatus(function *functionsv1alpha1.Function, now metav1.Time) {
@@ -118,6 +214,19 @@ func reconcileExistingFunctionStatus(function *functionsv1alpha1.Function, now m
 		Status:             metav1.ConditionTrue,
 		Reason:             "ExistingFunctionResolved",
 		Message:            "Existing OCI Function OCID and invoke endpoint are configured.",
+		ObservedGeneration: function.Generation,
+		LastTransitionTime: now,
+	})
+}
+
+func reconcileExistingFunctionDeletePolicyError(function *functionsv1alpha1.Function, now metav1.Time) {
+	function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+	function.Status.Message = "spec.deletionPolicy=Delete is only supported for Managed mode. Existing mode never deletes OCI resources."
+	function.SetCondition(metav1.Condition{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "InvalidDeletionPolicy",
+		Message:            function.Status.Message,
 		ObservedGeneration: function.Generation,
 		LastTransitionTime: now,
 	})
@@ -226,6 +335,11 @@ func resolvedSpecFunctionID(function *functionsv1alpha1.Function) string {
 	return strings.TrimSpace(function.Spec.ExistingFunctionOCID)
 }
 
+func shouldHaveFunctionFinalizer(function *functionsv1alpha1.Function, mode functionsv1alpha1.FunctionMode) bool {
+	return mode == functionsv1alpha1.FunctionModeManaged &&
+		function.DeletionPolicy() == functionsv1alpha1.FunctionDeletionPolicyDelete
+}
+
 func desiredFunctionFromSpec(function *functionsv1alpha1.Function) lifecycle.DesiredFunction {
 	config := function.Spec.Config
 	return lifecycle.DesiredFunction{
@@ -242,6 +356,109 @@ func desiredFunctionFromSpec(function *functionsv1alpha1.Function) lifecycle.Des
 		Config:                  desiredConfigMap(config),
 		FreeformTags:            copyStringMap(config.FreeformTags),
 	}
+}
+
+func managedFunctionDeleteTarget(function *functionsv1alpha1.Function) lifecycle.ManagedFunctionDeleteTarget {
+	functionID := strings.TrimSpace(function.Status.FunctionID)
+	if functionID == "" {
+		functionID = strings.TrimSpace(function.Status.FunctionOCID)
+	}
+	target := lifecycle.ManagedFunctionDeleteTarget{FunctionID: functionID}
+	if function.Spec.Config == nil {
+		return target
+	}
+	target.Region = strings.TrimSpace(function.Spec.Config.Region)
+	target.CompartmentID = strings.TrimSpace(function.Spec.Config.CompartmentID)
+	target.ApplicationName = strings.TrimSpace(function.Spec.Config.ApplicationName)
+	target.DisplayName = strings.TrimSpace(function.Spec.Config.DisplayName)
+	return target
+}
+
+func deletionErrorStatus(function *functionsv1alpha1.Function, now metav1.Time, reason, message string) functionsv1alpha1.FunctionStatus {
+	status := function.Status
+	status.ObservedGeneration = function.Generation
+	status.Phase = functionsv1alpha1.FunctionPhaseError
+	status.Message = message
+	setFunctionReadyCondition(&status, metav1.ConditionFalse, reason, message, function.Generation, now)
+	return status
+}
+
+func functionDeletionBackoff(function *functionsv1alpha1.Function, now time.Time) (time.Duration, bool) {
+	if !isFunctionDeleteFailure(function) || function.Status.LastSyncTime == nil {
+		return 0, false
+	}
+	elapsed := now.Sub(function.Status.LastSyncTime.Time)
+	if elapsed >= functionDeleteRequeue {
+		return 0, false
+	}
+	return functionDeleteRequeue - elapsed, true
+}
+
+func isFunctionDeleteFailure(function *functionsv1alpha1.Function) bool {
+	if function.Status.Phase != functionsv1alpha1.FunctionPhaseError {
+		return false
+	}
+	for _, condition := range function.Status.Conditions {
+		if condition.Type != functionsv1alpha1.FunctionConditionReady {
+			continue
+		}
+		return condition.Status == metav1.ConditionFalse &&
+			(condition.Reason == "ManagedFunctionDeleteFailed" || condition.Reason == "LifecycleManagerNotConfigured")
+	}
+	return false
+}
+
+func setFunctionReadyCondition(status *functionsv1alpha1.FunctionStatus, conditionStatus metav1.ConditionStatus, reason, message string, generation int64, now metav1.Time) {
+	condition := metav1.Condition{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             conditionStatus,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: generation,
+		LastTransitionTime: now,
+	}
+	for i := range status.Conditions {
+		existing := &status.Conditions[i]
+		if existing.Type != condition.Type {
+			continue
+		}
+		if existing.Status == condition.Status {
+			condition.LastTransitionTime = existing.LastTransitionTime
+		}
+		status.Conditions[i] = condition
+		return
+	}
+	status.Conditions = append(status.Conditions, condition)
+}
+
+func (r *FunctionReconciler) updateFunctionStatusIfChanged(ctx context.Context, function *functionsv1alpha1.Function, desired functionsv1alpha1.FunctionStatus, updateLastSync bool) (bool, error) {
+	current := function.Status
+	current.LastSyncTime = nil
+	comparableDesired := desired
+	comparableDesired.LastSyncTime = nil
+	if reflect.DeepEqual(current, comparableDesired) {
+		return false, nil
+	}
+	if updateLastSync {
+		now := metav1.Now()
+		desired.LastSyncTime = &now
+	}
+	function.Status = desired
+	if err := r.Status().Update(ctx, function); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func normalizeFunctionLifecycleError(operation string, err error) string {
+	if err == nil {
+		return ensureSentence(fmt.Sprintf("%s failed", operation))
+	}
+	message := sanitizeOCIErrorText(err.Error())
+	if message == "" {
+		message = "OCI Functions API request failed"
+	}
+	return ensureSentence(fmt.Sprintf("%s failed: %s", operation, message))
 }
 
 func desiredMemoryInMBs(config *functionsv1alpha1.FunctionConfig) int64 {
@@ -301,6 +518,13 @@ func (r *FunctionReconciler) recordLifecycleEvents(function *functionsv1alpha1.F
 		}
 		r.Recorder.Event(function, eventType, event.Reason, event.Message)
 	}
+}
+
+func (r *FunctionReconciler) recordFunctionEvent(function *functionsv1alpha1.Function, eventType, reason, message string) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Event(function, eventType, reason, message)
 }
 
 // SetupWithManager sets up the controller with the Manager.
