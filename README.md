@@ -5,7 +5,7 @@ Kubernetes-native management and job-style invocation of OCI Functions from OKE.
 MVP controller image:
 
 ```text
-ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1
+ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
 ```
 
 ## MVP Feature Summary

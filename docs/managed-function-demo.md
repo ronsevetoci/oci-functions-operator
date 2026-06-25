@@ -28,7 +28,7 @@ OCI Functions pulls the function image from OCIR during invocation. The Function
 If you are testing local code changes, build and push the operator/controller image first:
 
 ```sh
-export OPERATOR_IMAGE="ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1"
+export OPERATOR_IMAGE="ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0"
 
 docker build -t "$OPERATOR_IMAGE" .
 docker push "$OPERATOR_IMAGE"
@@ -86,8 +86,8 @@ Use `linux/amd64` for a `GENERIC_X86` OCI Functions application. If you choose a
 ## 3. Install The Operator With Helm
 
 ```sh
-export OPERATOR_IMAGE_REPOSITORY="${OPERATOR_IMAGE_REPOSITORY:-ghcr.io/ronsevet/oci-functions-operator/controller}"
-export OPERATOR_IMAGE_TAG="mvp-events-functionevents-v1"
+export OPERATOR_IMAGE_REPOSITORY="${OPERATOR_IMAGE_REPOSITORY:-ghcr.io/ronsevetoci/oci-functions-operator/controller}"
+export OPERATOR_IMAGE_TAG="v0.1.0"
 export OCI_REGION="me-jeddah-1"
 
 helm upgrade --install oci-functions-operator charts/oci-functions-operator \

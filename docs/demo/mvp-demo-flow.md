@@ -3,7 +3,7 @@
 Primary demo image:
 
 ```text
-ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1
+ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
 ```
 
 This is the primary OKE demo path. Run the commands directly from the sections below.
@@ -14,8 +14,8 @@ Set demo values:
 
 ```sh
 export OCI_REGION="me-jeddah-1"
-export OPERATOR_IMAGE_REPOSITORY="ghcr.io/ronsevet/oci-functions-operator/controller"
-export OPERATOR_IMAGE_TAG="mvp-events-functionevents-v1"
+export OPERATOR_IMAGE_REPOSITORY="ghcr.io/ronsevetoci/oci-functions-operator/controller"
+export OPERATOR_IMAGE_TAG="v0.1.0"
 export COMPARTMENT_OCID="<function-compartment-ocid>"
 export SUBNET_OCID="<functions-subnet-ocid>"
 export NSG_OCID="<functions-nsg-ocid>"
@@ -87,7 +87,7 @@ kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.or
 kubectl -n oci-functions-operator-system get deploy oci-functions-operator-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
-Expected: rollout succeeds, all four CRDs exist, and the image ends with `:mvp-events-functionevents-v1`.
+Expected: rollout succeeds, all four CRDs exist, and the image ends with `:v0.1.0`.
 
 ## 3. Use Case 1: Function CRD Manages OCI Function
 

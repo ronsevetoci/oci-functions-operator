@@ -4,7 +4,7 @@ Secondary checklist. Use [MVP demo flow](mvp-demo-flow.md) as the primary guide.
 
 ## Repo
 
-- [ ] Final image tag is visible in README and Helm docs: `ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1`.
+- [ ] Final image tag is visible in README and Helm docs: `ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0`.
 - [ ] `make test` passes.
 - [ ] `helm lint charts/oci-functions-operator` passes.
 - [ ] `helm template oci-functions-operator charts/oci-functions-operator --namespace oci-functions-operator-system --set oci.region=me-jeddah-1 --include-crds` renders the final image tag.

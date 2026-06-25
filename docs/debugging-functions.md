@@ -12,8 +12,8 @@ The controller image in the base manager manifest is a scaffold placeholder. For
 ```sh
 helm upgrade oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
-  --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
-  --set image.tag=mvp-events-functionevents-v1
+  --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
+  --set image.tag=v0.1.0
 ```
 
 GHCR is acceptable for the operator image if OKE can pull it.

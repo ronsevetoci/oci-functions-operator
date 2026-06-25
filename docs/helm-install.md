@@ -13,7 +13,7 @@ charts/oci-functions-operator
 The MVP handoff image tag is:
 
 ```text
-ghcr.io/ronsevet/oci-functions-operator/controller:mvp-events-functionevents-v1
+ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
 ```
 
 ## Defaults
@@ -43,8 +43,8 @@ The Helm chart is the supported path for configuring `INVOKER_MODE=oci` and `OCI
 helm install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
-  --set image.tag=mvp-events-functionevents-v1
+  --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
+  --set image.tag=v0.1.0
 ```
 
 If needed, include the OKE region:
@@ -53,8 +53,8 @@ If needed, include the OKE region:
 helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/ronsevet/oci-functions-operator/controller \
-  --set image.tag=mvp-events-functionevents-v1 \
+  --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
+  --set image.tag=v0.1.0 \
   --set oci.region=me-jeddah-1
 ```
 
@@ -63,7 +63,7 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
 ```sh
 helm upgrade oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
-  --set image.tag=mvp-events-functionevents-v1
+  --set image.tag=v0.1.0
 ```
 
 Helm fresh install installs chart CRDs, but Helm upgrade does not upgrade CRDs from the `crds/` directory. Before upgrading an existing release after API schema changes, apply CRDs deliberately:
@@ -89,12 +89,12 @@ Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so
 
 ```yaml
 image:
-  repository: ghcr.io/ronsevet/oci-functions-operator/controller
-  tag: mvp-events-functionevents-v1
+  repository: ghcr.io/ronsevetoci/oci-functions-operator/controller
+  tag: v0.1.0
   pullPolicy: IfNotPresent
 ```
 
-If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `mvp-events-functionevents-v1`.
+If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `v0.1.0`.
 
 ## Service Account And Workload Identity
 
