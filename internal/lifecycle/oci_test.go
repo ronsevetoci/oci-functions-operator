@@ -94,6 +94,7 @@ func TestEnsureFunctionUpdatesApplicationNSGsWhenChanged(t *testing.T) {
 			Id:                      common.String(fakeApplicationID),
 			DisplayName:             common.String("demo-app"),
 			LifecycleState:          ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:               []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
 			NetworkSecurityGroupIds: []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.old"},
 		},
 	}
@@ -139,6 +140,7 @@ func TestEnsureFunctionReturnsApplicationNSGUpdateFailure(t *testing.T) {
 			Id:                      common.String(fakeApplicationID),
 			DisplayName:             common.String("demo-app"),
 			LifecycleState:          ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:               []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
 			NetworkSecurityGroupIds: []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.old"},
 		},
 		updateApplicationErr: errors.New("not authorized to update NSGs"),
@@ -170,6 +172,131 @@ func TestEnsureFunctionReturnsApplicationNSGUpdateFailure(t *testing.T) {
 	}
 	if !hasLifecycleEvent(state.Events, EventTypeWarning, "ApplicationNSGUpdateFailed") {
 		t.Fatalf("events = %#v, want ApplicationNSGUpdateFailed warning event", state.Events)
+	}
+}
+
+func TestEnsureApplicationCreatesManagedApplication(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:                    ApplicationModeManaged,
+		Region:                  "me-jeddah-1",
+		CompartmentID:           "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:             "demo-app",
+		SubnetIDs:               []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		ApplicationNSGIDs:       []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"},
+		ManageApplicationNSGIDs: true,
+		Config:                  map[string]string{"APP_LEVEL": "true"},
+	})
+	if err != nil {
+		t.Fatalf("EnsureApplication returned error: %v", err)
+	}
+	if fakeClient.region != "me-jeddah-1" {
+		t.Fatalf("region = %q, want me-jeddah-1", fakeClient.region)
+	}
+	if state.ApplicationID != fakeApplicationID || !state.Ready {
+		t.Fatalf("state = %#v, want ready app ID", state)
+	}
+	if fakeClient.createdApplication.DisplayName == nil || *fakeClient.createdApplication.DisplayName != "demo-app" {
+		t.Fatalf("created displayName = %#v, want demo-app", fakeClient.createdApplication.DisplayName)
+	}
+	if !reflect.DeepEqual(fakeClient.createdApplication.Config, map[string]string{"APP_LEVEL": "true"}) {
+		t.Fatalf("created config = %#v, want app config", fakeClient.createdApplication.Config)
+	}
+}
+
+func TestEnsureApplicationUpdatesMutableFields(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		application: ocifunctions.Application{
+			Id:                      common.String(fakeApplicationID),
+			DisplayName:             common.String("demo-app"),
+			LifecycleState:          ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:               []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			NetworkSecurityGroupIds: []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.old"},
+			Config:                  map[string]string{"OLD": "true"},
+		},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:                           ApplicationModeManaged,
+		Region:                         "me-jeddah-1",
+		CompartmentID:                  "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:                    "demo-app",
+		SubnetIDs:                      []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		ApplicationNSGIDs:              []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.new"},
+		ManageApplicationNSGIDs:        true,
+		Config:                         map[string]string{"NEW": "true"},
+		ManageApplicationConfiguration: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureApplication returned error: %v", err)
+	}
+	if state.ApplicationID != fakeApplicationID {
+		t.Fatalf("state application ID = %q, want %q", state.ApplicationID, fakeApplicationID)
+	}
+	if !reflect.DeepEqual(fakeClient.updatedApplication.NetworkSecurityGroupIds, []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.new"}) {
+		t.Fatalf("updated NSGs = %#v, want new NSG", fakeClient.updatedApplication.NetworkSecurityGroupIds)
+	}
+	if !reflect.DeepEqual(fakeClient.updatedApplication.Config, map[string]string{"NEW": "true"}) {
+		t.Fatalf("updated config = %#v, want new config", fakeClient.updatedApplication.Config)
+	}
+}
+
+func TestDeleteApplicationDeletesOnlyWhenEmpty(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteApplication(ctx, ApplicationDeleteTarget{
+		Region:        "me-jeddah-1",
+		ApplicationID: fakeApplicationID,
+	})
+	if err != nil {
+		t.Fatalf("DeleteApplication returned error: %v", err)
+	}
+	if fakeClient.deletedApplicationID != fakeApplicationID {
+		t.Fatalf("deletedApplicationID = %q, want %q", fakeClient.deletedApplicationID, fakeApplicationID)
+	}
+	if !state.Deleted {
+		t.Fatalf("state.Deleted = false, want true")
+	}
+}
+
+func TestDeleteApplicationBlocksWhenFunctionsRemain(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		functions: []ocifunctions.FunctionSummary{{
+			Id:             common.String(fakeFunctionID),
+			DisplayName:    common.String("hello"),
+			LifecycleState: ocifunctions.FunctionLifecycleStateActive,
+		}},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteApplication(ctx, ApplicationDeleteTarget{
+		Region:        "me-jeddah-1",
+		ApplicationID: fakeApplicationID,
+	})
+	if err != nil {
+		t.Fatalf("DeleteApplication returned error: %v", err)
+	}
+	if fakeClient.deletedApplicationID != "" {
+		t.Fatalf("deletedApplicationID = %q, want empty when functions remain", fakeClient.deletedApplicationID)
+	}
+	if !state.Blocked || state.Deleted {
+		t.Fatalf("state = %#v, want blocked and not deleted", state)
+	}
+	if !hasLifecycleEvent(state.Events, EventTypeWarning, "ApplicationDeleteBlocked") {
+		t.Fatalf("events = %#v, want ApplicationDeleteBlocked", state.Events)
 	}
 }
 
@@ -232,6 +359,35 @@ func TestDeleteManagedFunctionResolvesFunctionWhenStatusFunctionIDMissing(t *tes
 	}
 }
 
+func TestDeleteManagedFunctionResolvesFunctionByApplicationID(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		functions: []ocifunctions.FunctionSummary{{
+			Id:             common.String(fakeFunctionID),
+			DisplayName:    common.String("hello"),
+			LifecycleState: ocifunctions.FunctionLifecycleStateActive,
+		}},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.DeleteManagedFunction(ctx, ManagedFunctionDeleteTarget{
+		ApplicationID: fakeApplicationID,
+		DisplayName:   "hello",
+	})
+	if err != nil {
+		t.Fatalf("DeleteManagedFunction returned error: %v", err)
+	}
+	if fakeClient.region != "me-jeddah-1" {
+		t.Fatalf("region = %q, want region from application OCID", fakeClient.region)
+	}
+	if fakeClient.deletedFunctionID != fakeFunctionID {
+		t.Fatalf("deletedFunctionID = %q, want resolved %q", fakeClient.deletedFunctionID, fakeFunctionID)
+	}
+	if state.ApplicationID != fakeApplicationID || state.FunctionID != fakeFunctionID {
+		t.Fatalf("state = %#v, want resolved application/function IDs", state)
+	}
+}
+
 func TestDeleteManagedFunctionTreatsNotFoundAsSuccessfulCleanup(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := &fakeManagementClient{deleteFunctionErr: fakeServiceError{status: 404, code: "NotAuthorizedOrNotFound", message: "not found"}}
@@ -266,6 +422,8 @@ type fakeManagementClient struct {
 	createdApplication   ocifunctions.CreateApplicationDetails
 	updatedApplication   ocifunctions.UpdateApplicationDetails
 	updatedApplicationID string
+	deletedApplicationID string
+	deleteApplicationErr error
 	createdFunction      ocifunctions.CreateFunctionDetails
 	functions            []ocifunctions.FunctionSummary
 	deletedFunctionID    string
@@ -316,8 +474,17 @@ func (f *fakeManagementClient) UpdateApplication(_ context.Context, request ocif
 		application.Id = common.String(fakeApplicationID)
 	}
 	application.NetworkSecurityGroupIds = request.UpdateApplicationDetails.NetworkSecurityGroupIds
+	application.Config = request.UpdateApplicationDetails.Config
 	application.LifecycleState = ocifunctions.ApplicationLifecycleStateActive
 	return ocifunctions.UpdateApplicationResponse{Application: application}, nil
+}
+
+func (f *fakeManagementClient) DeleteApplication(_ context.Context, request ocifunctions.DeleteApplicationRequest) (ocifunctions.DeleteApplicationResponse, error) {
+	f.deletedApplicationID = stringValue(request.ApplicationId)
+	if f.deleteApplicationErr != nil {
+		return ocifunctions.DeleteApplicationResponse{}, f.deleteApplicationErr
+	}
+	return ocifunctions.DeleteApplicationResponse{}, nil
 }
 
 func (f *fakeManagementClient) ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error) {

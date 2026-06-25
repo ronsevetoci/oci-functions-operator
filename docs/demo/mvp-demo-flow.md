@@ -83,13 +83,45 @@ Verify:
 
 ```sh
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
-kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com
+kubectl get crd functionapplications.functions.oci.oracle.com functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com
 kubectl -n oci-functions-operator-system get deploy oci-functions-operator-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
-Expected: rollout succeeds, all four CRDs exist, and the image ends with `:v0.1.0`.
+Expected: rollout succeeds, all five CRDs exist, and the image ends with `:v0.1.0`.
 
-## 3. Use Case 1: Function CRD Manages OCI Function
+## 3. Use Case 1: FunctionApplication And Function Manage OCI Resources
+
+Create the OCI Functions Application explicitly:
+
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionApplication
+metadata:
+  name: managed-hello-app
+  namespace: default
+spec:
+  mode: Managed
+  deletionPolicy: Retain
+  region: ${OCI_REGION}
+  compartmentId: ${COMPARTMENT_OCID}
+  displayName: oke-functions-operator-demo
+  subnetIds:
+  - ${SUBNET_OCID}
+  nsgIds:
+  - ${NSG_OCID}
+  config:
+    APP_GREETING: "hello from application config"
+EOF
+
+kubectl wait --for=condition=Ready functionapplication/managed-hello-app --timeout=10m
+kubectl get functionapplications
+kubectl describe functionapplication managed-hello-app
+```
+
+Expected: `managed-hello-app` reaches `PHASE=Ready`, `Ready=True`, and has `status.applicationId`.
+
+Create the OCI Function inside that application:
 
 ```sh
 cat <<EOF | kubectl apply -f -
@@ -101,14 +133,9 @@ metadata:
 spec:
   mode: Managed
   deletionPolicy: Retain
+  applicationRef:
+    name: managed-hello-app
   config:
-    region: ${OCI_REGION}
-    compartmentId: ${COMPARTMENT_OCID}
-    applicationName: oke-functions-operator-demo
-    subnetIds:
-    - ${SUBNET_OCID}
-    nsgIds:
-    - ${NSG_OCID}
     displayName: managed-hello
     image: ${FUNCTION_IMAGE}
     memoryInMBs: 256
@@ -222,17 +249,19 @@ kubectl delete functioneventtrigger order-created-trigger --ignore-not-found
 kubectl delete functioneventtrigger object-created-trigger --ignore-not-found
 kubectl delete functionjob managed-hello-job --ignore-not-found
 kubectl delete function managed-hello --ignore-not-found
+kubectl delete functionapplication managed-hello-app --ignore-not-found
 
 helm uninstall oci-functions-operator --namespace oci-functions-operator-system
 ```
 
-Helm leaves CRDs behind by design. Managed `Function` deletion defaults to `deletionPolicy: Retain`, so the Kubernetes object is removed and OCI resources stay in place. To let the operator delete the managed OCI Function during cleanup, set `spec.deletionPolicy: Delete` before deleting the `Function`. The OCI Functions application is still retained in this MVP.
+Helm leaves CRDs behind by design. Managed `Function` and `FunctionApplication` deletion defaults to `deletionPolicy: Retain`, so Kubernetes objects are removed and OCI resources stay in place. To let the operator delete the managed OCI Function during cleanup, set `Function.spec.deletionPolicy: Delete` before deleting the `Function`. To let the operator delete the OCI Application, set `FunctionApplication.spec.deletionPolicy: Delete`; deletion is blocked and retried if functions still remain in the application.
 
 ## 9. Short Talk Track For Each Section
 
 - Preparation: "We confirm IAM, tools, auth, image, and network before touching the operator."
 - Install: "Helm is the OKE install path; CRDs are applied explicitly for upgrade safety."
-- Function: "A Kubernetes `Function` reconciles a real OCI Functions application/function."
+- FunctionApplication: "`FunctionApplication` maps to the real OCI Functions Application and owns subnet, NSG, and app-level config."
+- Function: "A Kubernetes `Function` maps to the OCI Function inside that application."
 - FunctionJob: "A Kubernetes `FunctionJob` invokes the Function and shows payload-level status."
 - OCI Events trigger: "`FunctionEventTrigger` creates an OCI Events Rule for Object Storage createobject."
 - FunctionEvent: "`FunctionEvent` gives in-cluster apps a Kubernetes-native event emission path."

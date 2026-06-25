@@ -14,9 +14,10 @@ This is intentionally not modeled as Pods or Kubernetes Jobs. OCI Functions are 
 
 ## MVP Scope
 
-The operator currently exposes four namespaced resources in `functions.oci.oracle.com/v1alpha1`:
+The operator currently exposes five namespaced resources in `functions.oci.oracle.com/v1alpha1`:
 
-- `Function`: either references an existing OCI Function by `spec.functionId` and `spec.invokeEndpoint`, or manages an OCI Functions application/function from desired config.
+- `FunctionApplication`: creates, updates, or resolves an OCI Functions Application, including compartment, region, subnet IDs, NSG IDs, and application-level config.
+- `Function`: either references an existing OCI Function by `spec.functionId` and `spec.invokeEndpoint`, or manages an OCI Function inside a referenced `FunctionApplication`. Legacy one-object managed config remains supported.
 - `FunctionJob`: references a `Function`, carries inline JSON payloads, controls per-reconcile parallelism, applies retry limits, and records status aggregation.
 - `FunctionEventTrigger`: routes an OCI Events Rule event type or Kubernetes-native `functionevent.*` event type to a referenced `Function`.
 - `FunctionEvent`: Kubernetes-native event object matched against `FunctionEventTrigger.spec.condition.eventType`.
@@ -34,14 +35,15 @@ Implemented invoker modes:
 - Native Kubernetes Job compatibility.
 - Pod templates, volumes, sidecars, init containers, GPUs, or privileged execution.
 - Image publishing, function source builds, or deployment packaging.
-- Deleting OCI Functions applications.
+- Force-deleting OCI Functions applications that still contain functions.
 - Long-running durable queue semantics for large batches.
 
 ## Architecture
 
-The controller manager runs four reconcilers:
+The controller manager runs five reconcilers:
 
-- `FunctionReconciler` resolves a `Function` into a ready, pending, or error status. Existing function references validate required fields; managed functions ensure an OCI Functions application and function.
+- `FunctionApplicationReconciler` resolves or reconciles the OCI Functions Application and records its OCID/readiness.
+- `FunctionReconciler` resolves a `Function` into a ready, pending, or error status. Existing function references validate required fields; managed functions wait for any referenced `FunctionApplication` and then ensure an OCI Function.
 - `FunctionJobReconciler` resolves the referenced `Function`, initializes per-payload status, invokes runnable payloads through `invoker.Interface`, aggregates status, and emits events.
 - `FunctionEventTriggerReconciler` creates or updates OCI Events Rules for OCI event types and treats `functionevent.*` triggers as Kubernetes-native routes.
 - `FunctionEventReconciler` matches `FunctionEvent.spec.eventType` against same-namespace FunctionEventTriggers and invokes the referenced Functions through `invoker.Interface`.
@@ -54,8 +56,11 @@ type Interface interface {
 }
 
 type Manager interface {
+    EnsureApplication(ctx context.Context, desired DesiredApplication) (ApplicationState, error)
     EnsureFunction(ctx context.Context, desired DesiredFunction) (FunctionState, error)
+    EnsureFunctionInApplication(ctx context.Context, desired DesiredFunctionInApplication) (FunctionState, error)
     DeleteManagedFunction(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error)
+    DeleteApplication(ctx context.Context, target ApplicationDeleteTarget) (ApplicationDeletionState, error)
 }
 
 type EventTriggerManager interface {
@@ -65,6 +70,29 @@ type EventTriggerManager interface {
 ```
 
 An optional `FunctionIDRequirement` capability lets OCI mode tell the job controller that the referenced `Function` must resolve an OCI Function OCID. This keeps controllers independent of OCI SDK concrete types while still validating OCI-mode requirements early.
+
+## FunctionApplication Lifecycle
+
+`FunctionApplication` maps directly to an OCI Functions Application. It is the preferred place for application-scoped settings:
+
+- `spec.region`
+- `spec.compartmentId`
+- `spec.displayName`
+- `spec.subnetIds`
+- `spec.nsgIds`
+- `spec.config`
+
+Managed applications are created if missing and have mutable NSG IDs and application config reconciled. OCI Functions does not expose subnet mutation through the update API, so subnet drift is reported clearly instead of silently ignored.
+
+Existing applications are resolved by `spec.existingApplicationId` or by display name, compartment, and region. Existing mode never deletes OCI resources.
+
+`spec.nsgIds` has deliberate reconciliation semantics:
+
+- omitted: leave NSGs unmanaged on existing/adopted applications.
+- empty list: explicitly clear all NSGs from the application.
+- non-empty list: create new applications with those NSGs and reconcile existing applications to that desired set.
+
+`FunctionApplication.spec.deletionPolicy` defaults to `Retain`. `Delete` is honored only for managed applications and only when no functions remain in the OCI Application; otherwise deletion is blocked with status/events and retried.
 
 ## Function Lifecycle
 
@@ -79,27 +107,20 @@ When existing mode is used:
 
 When managed mode is used:
 
-- the controller ensures the OCI Functions application exists.
-- the controller creates the application with requested subnet IDs and NSG IDs.
-- the controller reconciles application NSG IDs when `spec.config.nsgIds` is set.
+- with `spec.applicationRef.name`, the controller waits for the referenced `FunctionApplication` to be Ready and uses its `status.applicationId`.
+- without `spec.applicationRef.name`, the controller preserves the legacy behavior of ensuring the OCI Functions application from `spec.config`.
 - the controller ensures the OCI Function exists.
 - image, memory, timeout, and config are updated when they drift.
 - `status.applicationId`, `status.functionId`, and `status.invokeEndpoint` are populated from OCI responses.
 - `status.phase` remains `Pending` until the application/function metadata is usable and the function is active with an invoke endpoint.
 
-Managed mode config includes region, compartment OCID, application name, subnet OCIDs, optional application NSG OCIDs, image, memory, timeout, and function config. Jeddah is represented with the OCI region identifier `me-jeddah-1`.
+Preferred managed mode keeps only function-level settings in `Function.spec.config`: display name, image, memory, timeout, and function config. Legacy managed mode still accepts region, compartment OCID, application name, subnet OCIDs, and optional application NSG OCIDs under `Function.spec.config` for backward compatibility. Jeddah is represented with the OCI region identifier `me-jeddah-1`.
 
-`spec.config.nsgIds` has deliberate reconciliation semantics:
-
-- omitted: leave NSGs unmanaged on existing applications.
-- empty list: explicitly clear all NSGs from the application.
-- non-empty list: create new applications with those NSGs and reconcile existing applications to that desired set.
-
-OCI Functions pulls the function runtime image during invocation, not as an operator pod. The Functions application subnet must route to Oracle Services Network/OCIR, and any NSGs attached through `spec.config.nsgIds` must allow egress TCP 443 to Oracle Services Network/OCIR. Missing NSG egress can present as `FunctionInvokeImageNotAvailable: Failed to pull function image`, even when the OCIR repository is public or otherwise accessible.
+OCI Functions pulls the function runtime image during invocation, not as an operator pod. The Functions application subnet must route to Oracle Services Network/OCIR, and any NSGs attached through `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds` must allow egress TCP 443 to Oracle Services Network/OCIR. Missing NSG egress can present as `FunctionInvokeImageNotAvailable: Failed to pull function image`, even when the OCIR repository is public or otherwise accessible.
 
 The function runtime image must be an OCI Functions-compatible Fn image in same-region OCIR. For Jeddah, that means `jed.ocir.io/...`. The operator/controller image is separate and may be hosted in GHCR or another registry OKE can pull.
 
-Managed `Function` deletion is opt-in through `spec.deletionPolicy: Delete`. The default `Retain` policy leaves OCI resources untouched. In Delete mode the controller uses a finalizer, deletes the managed OCI Function, treats already-missing OCI Functions as successful cleanup, and retains the OCI Functions application. Existing-mode Functions never delete OCI resources.
+Managed `Function` deletion is opt-in through `spec.deletionPolicy: Delete`. The default `Retain` policy leaves OCI resources untouched. In Delete mode the controller uses a finalizer, deletes the managed OCI Function, and treats already-missing OCI Functions as successful cleanup. Application cleanup is controlled separately by `FunctionApplication.spec.deletionPolicy`. Existing-mode Functions never delete OCI resources.
 
 ## FunctionJob Lifecycle
 
@@ -146,7 +167,7 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 
 ## Known Limitations
 
-- Managed lifecycle reconciles application/function create, application NSG updates, function update, and opt-in OCI Function deletion. OCI Functions application deletion is not implemented.
+- Managed lifecycle reconciles FunctionApplication create/adopt/update, application NSG/config updates, Function create/update, opt-in OCI Function deletion, and opt-in empty OCI Application deletion.
 - Existing mode requires the user to provide the invoke endpoint in `spec.invokeEndpoint`.
 - Inline payloads are intended for small demos and operational jobs, not large queues.
 - Large jobs should eventually use Object Storage, Queue, or Streaming payload sources instead of embedding all payloads in the CR.

@@ -53,7 +53,7 @@ Do not use GHCR for the function runtime image.
 - image not Fn-compatible, or
 - architecture mismatch.
 
-Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but public visibility does not solve subnet or NSG egress. If `spec.config.nsgIds` attaches NSGs to the Functions application, those NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
+Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but public visibility does not solve subnet or NSG egress. If `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds` attaches NSGs to the Functions application, those NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
 
 ## Function Not Ready
 
@@ -72,6 +72,8 @@ Managed Functions should have:
 - `status.functionId`,
 - `status.invokeEndpoint`, and
 - `Ready=True`.
+
+When `spec.applicationRef.name` is set, the referenced `FunctionApplication` should also have `status.applicationId` and `Ready=True`.
 
 ## Workload Identity
 

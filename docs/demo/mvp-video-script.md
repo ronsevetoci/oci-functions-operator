@@ -4,7 +4,7 @@ Secondary guide. Use [MVP demo flow](mvp-demo-flow.md) for commands; this file i
 
 ## Opening
 
-"This is the MVP of the OCI Functions Operator for OKE. The operator keeps OCI Functions as OCI Functions, but gives users Kubernetes-native resources for lifecycle, invocation, OCI Events triggers, and in-cluster event emission."
+"This is the MVP of the OCI Functions Operator for OKE. The operator keeps OCI Functions as OCI Functions, but gives users Kubernetes-native resources for Applications, Functions, invocation, OCI Events triggers, and in-cluster event emission."
 
 ## Preparation
 
@@ -16,7 +16,7 @@ Secondary guide. Use [MVP demo flow](mvp-demo-flow.md) for commands; this file i
 
 ## Function
 
-"The `Function` CRD manages a real OCI Functions application and function. When reconciliation completes, Kubernetes status shows the OCI application ID, function ID, invoke endpoint, and `Ready=True`."
+"The `FunctionApplication` CRD maps to the real OCI Functions Application, including subnet, NSG, and app-level config. The `Function` CRD maps to the OCI Function inside it. When reconciliation completes, Kubernetes status shows the application ID, function ID, invoke endpoint, and `Ready=True`."
 
 ## FunctionJob
 
@@ -36,4 +36,4 @@ Secondary guide. Use [MVP demo flow](mvp-demo-flow.md) for commands; this file i
 
 ## Close
 
-"The MVP demonstrates four useful primitives: manage a Function, invoke it as a job, connect OCI service events, and emit Kubernetes-native events. Managed Function deletion is explicit and opt-in with `deletionPolicy: Delete`; applications are retained. Schedules, watches, queues, and workflows remain intentionally out of scope."
+"The MVP demonstrates five useful primitives: manage a Functions Application, manage a Function, invoke it as a job, connect OCI service events, and emit Kubernetes-native events. Managed deletion is explicit and opt-in with `deletionPolicy: Delete`; application deletion is blocked if functions remain. Schedules, watches, queues, and workflows remain intentionally out of scope."

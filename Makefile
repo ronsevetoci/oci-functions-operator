@@ -20,6 +20,7 @@ test:
 .PHONY: helm-chart
 helm-chart: manifests
 	mkdir -p charts/oci-functions-operator/crds
+	cp config/crd/bases/functions.oci.oracle.com_functionapplications.yaml charts/oci-functions-operator/crds/functionapplications.functions.oci.oracle.com.yaml
 	cp config/crd/bases/functions.oci.oracle.com_functions.yaml charts/oci-functions-operator/crds/functions.functions.oci.oracle.com.yaml
 	cp config/crd/bases/functions.oci.oracle.com_functionjobs.yaml charts/oci-functions-operator/crds/functionjobs.functions.oci.oracle.com.yaml
 	cp config/crd/bases/functions.oci.oracle.com_functionevents.yaml charts/oci-functions-operator/crds/functionevents.functions.oci.oracle.com.yaml

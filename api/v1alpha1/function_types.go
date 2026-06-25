@@ -46,7 +46,7 @@ const (
 )
 
 // FunctionSpec defines the desired state of Function.
-// +kubebuilder:validation:XValidation:rule="has(self.functionId) || has(self.existingFunctionOcid) || has(self.config)",message="one of spec.functionId, spec.existingFunctionOcid, or spec.config is required"
+// +kubebuilder:validation:XValidation:rule="has(self.functionId) || has(self.existingFunctionOcid) || has(self.config) || has(self.applicationRef)",message="one of spec.functionId, spec.existingFunctionOcid, spec.config, or spec.applicationRef is required"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && (has(self.functionId) || has(self.existingFunctionOcid)))",message="spec.config is mutually exclusive with existing function references"
 // +kubebuilder:validation:XValidation:rule="!(has(self.functionId) && has(self.existingFunctionOcid))",message="spec.functionId and spec.existingFunctionOcid are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="!(has(self.functionId) || has(self.existingFunctionOcid)) || has(self.invokeEndpoint)",message="existing Function mode requires spec.invokeEndpoint"
@@ -79,6 +79,12 @@ type FunctionSpec struct {
 	// +optional
 	Config *FunctionConfig `json:"config,omitempty"`
 
+	// ApplicationRef references a FunctionApplication that manages or resolves the OCI Functions application.
+	// When set, app-level settings such as region, compartmentId, applicationName, subnetIds, and nsgIds
+	// are read from the referenced FunctionApplication instead of this Function's legacy config.
+	// +optional
+	ApplicationRef *FunctionApplicationReference `json:"applicationRef,omitempty"`
+
 	// DeletionPolicy controls what happens to OCI resources when this Kubernetes Function is deleted.
 	// Defaults to Retain for safety. Delete is honored only for Managed mode and deletes the managed OCI Function.
 	// The OCI Functions application is retained in this MVP.
@@ -87,25 +93,40 @@ type FunctionSpec struct {
 	DeletionPolicy FunctionDeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
+// FunctionApplicationReference identifies a FunctionApplication in the same namespace.
+type FunctionApplicationReference struct {
+	// Name is the referenced FunctionApplication name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // FunctionConfig contains the minimal OCI Functions configuration this API manages.
 type FunctionConfig struct {
 	// Region is the OCI region identifier, such as me-jeddah-1.
+	// Required for legacy managed Functions that do not set applicationRef.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	Region string `json:"region"`
+	Region string `json:"region,omitempty"`
 
 	// CompartmentID is the compartment OCID for the managed application/function.
+	// Required for legacy managed Functions that do not set applicationRef.
+	// +optional
 	// +kubebuilder:validation:Pattern=^ocid1\.compartment\..+
-	CompartmentID string `json:"compartmentId"`
+	CompartmentID string `json:"compartmentId,omitempty"`
 
 	// ApplicationName is the display name of the OCI Functions application to ensure.
+	// Required for legacy managed Functions that do not set applicationRef.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	ApplicationName string `json:"applicationName"`
+	ApplicationName string `json:"applicationName,omitempty"`
 
 	// SubnetIDs are the subnet OCIDs for a newly created application.
+	// Required for legacy managed Functions that do not set applicationRef.
+	// +optional
 	// +kubebuilder:validation:MinItems=1
 	// +listType=atomic
-	SubnetIDs []string `json:"subnetIds"`
+	SubnetIDs []string `json:"subnetIds,omitempty"`
 
 	// NSGIDs are the Network Security Group OCIDs to attach to the managed OCI Functions application.
 	// When omitted, the operator leaves NSGs unmanaged on existing applications.

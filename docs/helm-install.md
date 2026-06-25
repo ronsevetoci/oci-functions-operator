@@ -1,6 +1,6 @@
 # Helm Install
 
-Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place. The packaged CRDs are `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
+Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place. The packaged CRDs are `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 
 Use Helm for supported OKE installs and upgrades. Kustomize manifests under `config/` are retained for operator development only. Do not mix Helm and Kustomize resources for the same cluster install.
 
@@ -83,7 +83,7 @@ helm uninstall oci-functions-operator \
 
 Helm uninstall removes namespaced chart resources, ClusterRoles, and bindings, but CRDs installed from `crds/` are intentionally left behind by Helm. Remove CRDs manually only after deleting custom resources you care about.
 
-Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so deleting them leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. The OCI Functions application is retained in this MVP. Existing-mode `Function` resources never delete OCI resources.
+Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so deleting them leaves OCI resources untouched. Set `Function.spec.deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. `FunctionApplication.spec.deletionPolicy` separately controls OCI Application cleanup; Delete is honored only for managed applications and only when no functions remain. Existing-mode resources never delete OCI resources.
 
 ## Image Values
 
@@ -191,6 +191,15 @@ Check installed permissions after deployment:
 kubectl auth can-i get functions.functions.oci.oracle.com \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 
+kubectl auth can-i get functionapplications.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i update functionapplications.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i update functionapplications.functions.oci.oracle.com/status \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
 kubectl auth can-i update functions.functions.oci.oracle.com \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 
@@ -221,7 +230,7 @@ ImagePullBackOff:
 Missing CRDs:
 
 - Confirm Helm installed the CRDs:
-  `kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com`
+  `kubectl get crd functionapplications.functions.oci.oracle.com functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com`
 - If CRDs were skipped or removed, apply:
   `kubectl apply -f charts/oci-functions-operator/crds/`
 
@@ -232,7 +241,7 @@ Stale CRDs after API changes:
 
 Missing RBAC:
 
-- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, their `status` and needed `finalizers`, and core `events`.
+- Confirm `helm template` contains the ClusterRole rules for `functionapplications`, `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, their `status` and needed `finalizers`, and core `events`.
 - Re-run the Helm upgrade if the ClusterRole drifted.
 - Do not repair a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
 

@@ -36,6 +36,7 @@ type functionsManagementClient interface {
 	CreateApplication(context.Context, ocifunctions.CreateApplicationRequest) (ocifunctions.CreateApplicationResponse, error)
 	GetApplication(context.Context, ocifunctions.GetApplicationRequest) (ocifunctions.GetApplicationResponse, error)
 	UpdateApplication(context.Context, ocifunctions.UpdateApplicationRequest) (ocifunctions.UpdateApplicationResponse, error)
+	DeleteApplication(context.Context, ocifunctions.DeleteApplicationRequest) (ocifunctions.DeleteApplicationResponse, error)
 	ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error)
 	CreateFunction(context.Context, ocifunctions.CreateFunctionRequest) (ocifunctions.CreateFunctionResponse, error)
 	GetFunction(context.Context, ocifunctions.GetFunctionRequest) (ocifunctions.GetFunctionResponse, error)
@@ -114,7 +115,7 @@ func (o *OCI) EnsureFunction(ctx context.Context, desired DesiredFunction) (Func
 
 	o.client.SetRegion(desired.Region)
 
-	application, events, err := o.ensureApplication(ctx, desired)
+	application, events, err := o.ensureApplication(ctx, desiredApplicationFromFunction(desired))
 	if err != nil {
 		return FunctionState{ApplicationID: stringValue(application.Id), Events: events}, err
 	}
@@ -146,16 +147,105 @@ func (o *OCI) EnsureFunction(ctx context.Context, desired DesiredFunction) (Func
 	return state, nil
 }
 
+// EnsureFunctionInApplication ensures an OCI Function exists in an already resolved OCI Functions application.
+func (o *OCI) EnsureFunctionInApplication(ctx context.Context, desired DesiredFunctionInApplication) (FunctionState, error) {
+	if o == nil || o.client == nil {
+		return FunctionState{}, fmt.Errorf("oci lifecycle manager is not configured")
+	}
+	if err := validateDesiredFunctionInApplication(desired); err != nil {
+		return FunctionState{}, err
+	}
+
+	o.client.SetRegion(desired.Region)
+
+	function, err := o.ensureFunction(ctx, DesiredFunction{
+		DisplayName:      desired.DisplayName,
+		Image:            desired.Image,
+		MemoryInMBs:      desired.MemoryInMBs,
+		TimeoutInSeconds: desired.TimeoutInSeconds,
+		Config:           desired.Config,
+		FreeformTags:     desired.FreeformTags,
+	}, desired.ApplicationID)
+	if err != nil {
+		return FunctionState{ApplicationID: desired.ApplicationID}, err
+	}
+
+	state := FunctionState{
+		ApplicationID:  desired.ApplicationID,
+		FunctionID:     stringValue(function.Id),
+		InvokeEndpoint: strings.TrimSpace(stringValue(function.InvokeEndpoint)),
+	}
+	if function.LifecycleState != "" && function.LifecycleState != ocifunctions.FunctionLifecycleStateActive {
+		state.Message = fmt.Sprintf("OCI function %q is %s.", desired.DisplayName, function.LifecycleState)
+		return state, nil
+	}
+	if state.FunctionID == "" || state.InvokeEndpoint == "" {
+		state.Message = "OCI function exists but invoke endpoint is not available yet."
+		return state, nil
+	}
+
+	state.Ready = true
+	state.Message = "Managed OCI Function is ready."
+	return state, nil
+}
+
+// EnsureApplication ensures or resolves an OCI Functions application.
+func (o *OCI) EnsureApplication(ctx context.Context, desired DesiredApplication) (ApplicationState, error) {
+	if o == nil || o.client == nil {
+		return ApplicationState{}, fmt.Errorf("oci lifecycle manager is not configured")
+	}
+	if err := validateDesiredApplication(desired); err != nil {
+		return ApplicationState{}, err
+	}
+
+	region := effectiveApplicationRegion(desired.Region, desired.ExistingApplicationID)
+	o.client.SetRegion(region)
+
+	application, events, err := o.ensureApplication(ctx, desired)
+	if err != nil {
+		return ApplicationState{
+			ApplicationID: stringValue(application.Id),
+			DisplayName:   stringValue(application.DisplayName),
+			Region:        region,
+			Events:        events,
+		}, err
+	}
+
+	state := ApplicationState{
+		ApplicationID: stringValue(application.Id),
+		DisplayName:   stringValue(application.DisplayName),
+		Region:        region,
+		Events:        events,
+	}
+	switch application.LifecycleState {
+	case "", ocifunctions.ApplicationLifecycleStateActive:
+		state.Ready = state.ApplicationID != ""
+		state.Message = "OCI Functions application is ready."
+	case ocifunctions.ApplicationLifecycleStateFailed:
+		state.Message = fmt.Sprintf("OCI Functions application %q is FAILED.", state.DisplayName)
+	default:
+		state.Message = fmt.Sprintf("OCI Functions application %q is %s.", state.DisplayName, application.LifecycleState)
+	}
+	if state.ApplicationID == "" {
+		state.Message = "OCI Functions application exists but OCID is not available yet."
+	}
+	return state, nil
+}
+
 // DeleteManagedFunction deletes a managed OCI Function and intentionally retains the OCI application.
 func (o *OCI) DeleteManagedFunction(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error) {
 	if o == nil || o.client == nil {
 		return FunctionDeletionState{}, fmt.Errorf("oci lifecycle manager is not configured")
 	}
-	if strings.TrimSpace(target.Region) == "" {
-		return FunctionDeletionState{}, fmt.Errorf("managed Function deletion requires spec.config.region")
+	region := effectiveFunctionRegion(target.Region, target.FunctionID)
+	if strings.TrimSpace(region) == "" {
+		region = effectiveApplicationRegion("", target.ApplicationID)
+	}
+	if strings.TrimSpace(region) == "" {
+		return FunctionDeletionState{}, fmt.Errorf("managed Function deletion requires spec.config.region or status.functionId with a region")
 	}
 
-	o.client.SetRegion(strings.TrimSpace(target.Region))
+	o.client.SetRegion(region)
 
 	functionID := strings.TrimSpace(target.FunctionID)
 	state := FunctionDeletionState{FunctionID: functionID}
@@ -192,6 +282,84 @@ func (o *OCI) DeleteManagedFunction(ctx context.Context, target ManagedFunctionD
 	return state, nil
 }
 
+// DeleteApplication deletes an OCI Functions application only when it has no active functions.
+func (o *OCI) DeleteApplication(ctx context.Context, target ApplicationDeleteTarget) (ApplicationDeletionState, error) {
+	if o == nil || o.client == nil {
+		return ApplicationDeletionState{}, fmt.Errorf("oci lifecycle manager is not configured")
+	}
+	region := effectiveApplicationRegion(target.Region, target.ApplicationID)
+	if strings.TrimSpace(region) == "" {
+		return ApplicationDeletionState{}, fmt.Errorf("FunctionApplication deletion requires spec.region or status.applicationId with a region")
+	}
+	applicationID := strings.TrimSpace(target.ApplicationID)
+	if applicationID == "" {
+		return ApplicationDeletionState{}, fmt.Errorf("FunctionApplication deletion requires status.applicationId")
+	}
+
+	o.client.SetRegion(region)
+
+	functions, err := o.client.ListFunctions(ctx, ocifunctions.ListFunctionsRequest{
+		ApplicationId: common.String(applicationID),
+		Limit:         common.Int(50),
+	})
+	if err != nil {
+		return ApplicationDeletionState{ApplicationID: applicationID}, fmt.Errorf("list OCI Functions before deleting application %s: %w", applicationID, err)
+	}
+	activeFunctions := 0
+	if stringValue(functions.OpcNextPage) != "" {
+		activeFunctions++
+	}
+	for _, function := range functions.Items {
+		if function.LifecycleState == ocifunctions.FunctionLifecycleStateDeleted || function.LifecycleState == ocifunctions.FunctionLifecycleStateDeleting {
+			continue
+		}
+		activeFunctions++
+	}
+	if activeFunctions > 0 {
+		message := fmt.Sprintf("Retained OCI Functions application %s because %d function(s) remain in it.", applicationID, activeFunctions)
+		return ApplicationDeletionState{
+			ApplicationID: applicationID,
+			Blocked:       true,
+			Message:       message,
+			Events: []Event{{
+				Type:    EventTypeWarning,
+				Reason:  "ApplicationDeleteBlocked",
+				Message: message,
+			}},
+		}, nil
+	}
+
+	_, err = o.client.DeleteApplication(ctx, ocifunctions.DeleteApplicationRequest{ApplicationId: common.String(applicationID)})
+	if err != nil {
+		if isOCIServiceNotFound(err) {
+			message := "OCI Functions application was not found; nothing to delete."
+			return ApplicationDeletionState{
+				ApplicationID: applicationID,
+				Deleted:       true,
+				Message:       message,
+				Events: []Event{{
+					Type:    EventTypeNormal,
+					Reason:  "ApplicationAlreadyDeleted",
+					Message: message,
+				}},
+			}, nil
+		}
+		return ApplicationDeletionState{ApplicationID: applicationID}, fmt.Errorf("delete OCI Functions application %s: %w", applicationID, err)
+	}
+
+	message := fmt.Sprintf("Deleted OCI Functions application %s.", applicationID)
+	return ApplicationDeletionState{
+		ApplicationID: applicationID,
+		Deleted:       true,
+		Message:       message,
+		Events: []Event{{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationDeleted",
+			Message: message,
+		}},
+	}, nil
+}
+
 func (o *OCI) deleteFunctionByID(ctx context.Context, functionID string) error {
 	if strings.TrimSpace(functionID) == "" {
 		return fmt.Errorf("managed Function deletion requires an OCI Function OCID")
@@ -209,43 +377,48 @@ func (o *OCI) deleteFunctionByID(ctx context.Context, functionID string) error {
 func (o *OCI) resolveFunctionForDelete(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error) {
 	state := FunctionDeletionState{}
 	switch {
+	case strings.TrimSpace(target.ApplicationID) != "":
+		state.ApplicationID = strings.TrimSpace(target.ApplicationID)
 	case strings.TrimSpace(target.CompartmentID) == "":
 		return state, fmt.Errorf("managed Function deletion requires spec.config.compartmentId when status.functionId is empty")
 	case strings.TrimSpace(target.ApplicationName) == "":
 		return state, fmt.Errorf("managed Function deletion requires spec.config.applicationName when status.functionId is empty")
-	case strings.TrimSpace(target.DisplayName) == "":
+	}
+	if strings.TrimSpace(target.DisplayName) == "" {
 		return state, fmt.Errorf("managed Function deletion requires spec.config.displayName when status.functionId is empty")
 	}
 
-	applications, err := o.client.ListApplications(ctx, ocifunctions.ListApplicationsRequest{
-		CompartmentId: common.String(strings.TrimSpace(target.CompartmentID)),
-		DisplayName:   common.String(strings.TrimSpace(target.ApplicationName)),
-		Limit:         common.Int(50),
-	})
-	if err != nil {
-		return state, fmt.Errorf("list OCI Functions applications for managed Function deletion: %w", err)
-	}
+	if state.ApplicationID == "" {
+		applications, err := o.client.ListApplications(ctx, ocifunctions.ListApplicationsRequest{
+			CompartmentId: common.String(strings.TrimSpace(target.CompartmentID)),
+			DisplayName:   common.String(strings.TrimSpace(target.ApplicationName)),
+			Limit:         common.Int(50),
+		})
+		if err != nil {
+			return state, fmt.Errorf("list OCI Functions applications for managed Function deletion: %w", err)
+		}
 
-	applicationIDs := []string{}
-	for _, application := range applications.Items {
-		if stringValue(application.DisplayName) != strings.TrimSpace(target.ApplicationName) {
-			continue
+		applicationIDs := []string{}
+		for _, application := range applications.Items {
+			if stringValue(application.DisplayName) != strings.TrimSpace(target.ApplicationName) {
+				continue
+			}
+			if application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleted || application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleting {
+				continue
+			}
+			applicationID := strings.TrimSpace(stringValue(application.Id))
+			if applicationID != "" {
+				applicationIDs = append(applicationIDs, applicationID)
+			}
 		}
-		if application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleted || application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleting {
-			continue
+		switch len(applicationIDs) {
+		case 0:
+			return state, nil
+		case 1:
+			state.ApplicationID = applicationIDs[0]
+		default:
+			return state, fmt.Errorf("managed Function deletion cannot safely resolve application %q: multiple matching applications found", strings.TrimSpace(target.ApplicationName))
 		}
-		applicationID := strings.TrimSpace(stringValue(application.Id))
-		if applicationID != "" {
-			applicationIDs = append(applicationIDs, applicationID)
-		}
-	}
-	switch len(applicationIDs) {
-	case 0:
-		return state, nil
-	case 1:
-		state.ApplicationID = applicationIDs[0]
-	default:
-		return state, fmt.Errorf("managed Function deletion cannot safely resolve application %q: multiple matching applications found", strings.TrimSpace(target.ApplicationName))
 	}
 
 	functions, err := o.client.ListFunctions(ctx, ocifunctions.ListFunctionsRequest{
@@ -281,17 +454,28 @@ func (o *OCI) resolveFunctionForDelete(ctx context.Context, target ManagedFuncti
 	}
 }
 
-func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (ocifunctions.Application, []Event, error) {
+func (o *OCI) ensureApplication(ctx context.Context, desired DesiredApplication) (ocifunctions.Application, []Event, error) {
+	if strings.TrimSpace(desired.ExistingApplicationID) != "" {
+		application, err := o.getApplication(ctx, strings.TrimSpace(desired.ExistingApplicationID))
+		if err != nil {
+			return ocifunctions.Application{}, nil, err
+		}
+		if desired.Mode == ApplicationModeExisting {
+			return application, nil, nil
+		}
+		return o.ensureApplicationMutableFields(ctx, desired, application)
+	}
+
 	response, err := o.client.ListApplications(ctx, ocifunctions.ListApplicationsRequest{
 		CompartmentId: common.String(desired.CompartmentID),
-		DisplayName:   common.String(desired.ApplicationName),
+		DisplayName:   common.String(desired.DisplayName),
 		Limit:         common.Int(50),
 	})
 	if err != nil {
 		return ocifunctions.Application{}, nil, fmt.Errorf("list OCI Functions applications: %w", err)
 	}
 	for _, item := range response.Items {
-		if stringValue(item.DisplayName) != desired.ApplicationName {
+		if stringValue(item.DisplayName) != desired.DisplayName {
 			continue
 		}
 		if item.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleted || item.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleting {
@@ -301,20 +485,27 @@ func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (o
 		if err != nil {
 			return ocifunctions.Application{}, nil, err
 		}
-		return o.ensureApplicationNSGs(ctx, desired, application)
+		if desired.Mode == ApplicationModeExisting {
+			return application, nil, nil
+		}
+		return o.ensureApplicationMutableFields(ctx, desired, application)
+	}
+	if desired.Mode == ApplicationModeExisting {
+		return ocifunctions.Application{}, nil, fmt.Errorf("resolve OCI Functions application %q: not found", desired.DisplayName)
 	}
 
 	created, err := o.client.CreateApplication(ctx, ocifunctions.CreateApplicationRequest{
 		CreateApplicationDetails: ocifunctions.CreateApplicationDetails{
 			CompartmentId:           common.String(desired.CompartmentID),
-			DisplayName:             common.String(desired.ApplicationName),
+			DisplayName:             common.String(desired.DisplayName),
 			SubnetIds:               copyStringSlice(desired.SubnetIDs),
 			NetworkSecurityGroupIds: copyStringSlice(desired.ApplicationNSGIDs),
+			Config:                  copyStringMap(desired.Config),
 			FreeformTags:            copyStringMap(desired.FreeformTags),
 		},
 	})
 	if err != nil {
-		return ocifunctions.Application{}, nil, fmt.Errorf("create OCI Functions application %q: %w", desired.ApplicationName, err)
+		return ocifunctions.Application{}, nil, fmt.Errorf("create OCI Functions application %q: %w", desired.DisplayName, err)
 	}
 
 	events := []Event{}
@@ -322,7 +513,7 @@ func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (o
 		events = append(events, Event{
 			Type:    EventTypeNormal,
 			Reason:  "ApplicationCreatedWithNSGs",
-			Message: fmt.Sprintf("Created OCI Functions application %q with NSGs %s.", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs)),
+			Message: fmt.Sprintf("Created OCI Functions application %q with NSGs %s.", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs)),
 		})
 	}
 	return created.Application, events, nil
@@ -339,36 +530,58 @@ func (o *OCI) getApplication(ctx context.Context, applicationID string) (ocifunc
 	return response.Application, nil
 }
 
-func (o *OCI) ensureApplicationNSGs(ctx context.Context, desired DesiredFunction, application ocifunctions.Application) (ocifunctions.Application, []Event, error) {
-	if !desired.ManageApplicationNSGIDs {
-		return application, nil, nil
+func (o *OCI) ensureApplicationMutableFields(ctx context.Context, desired DesiredApplication, application ocifunctions.Application) (ocifunctions.Application, []Event, error) {
+	if strings.TrimSpace(desired.DisplayName) != "" && stringValue(application.DisplayName) != desired.DisplayName {
+		return application, nil, fmt.Errorf("OCI Functions application displayName is %q and cannot be updated to %q by the OCI Functions API", stringValue(application.DisplayName), desired.DisplayName)
 	}
-	if sameStringSet(application.NetworkSecurityGroupIds, desired.ApplicationNSGIDs) {
+	if len(desired.SubnetIDs) > 0 && !sameStringSet(application.SubnetIds, desired.SubnetIDs) {
+		return application, nil, fmt.Errorf("OCI Functions application %q subnetIds differ and cannot be updated by the OCI Functions API", desired.DisplayName)
+	}
+	needsUpdate := false
+	updateDetails := ocifunctions.UpdateApplicationDetails{}
+	if desired.ManageApplicationNSGIDs && !sameStringSet(application.NetworkSecurityGroupIds, desired.ApplicationNSGIDs) {
+		updateDetails.NetworkSecurityGroupIds = copyStringSlice(desired.ApplicationNSGIDs)
+		needsUpdate = true
+	}
+	if desired.ManageApplicationConfiguration && !reflect.DeepEqual(nilToEmptyMap(application.Config), nilToEmptyMap(desired.Config)) {
+		updateDetails.Config = copyStringMap(desired.Config)
+		needsUpdate = true
+	}
+	if !needsUpdate {
 		return application, nil, nil
 	}
 
 	applicationID := stringValue(application.Id)
 	updated, err := o.client.UpdateApplication(ctx, ocifunctions.UpdateApplicationRequest{
-		ApplicationId: common.String(applicationID),
-		UpdateApplicationDetails: ocifunctions.UpdateApplicationDetails{
-			NetworkSecurityGroupIds: copyStringSlice(desired.ApplicationNSGIDs),
-		},
+		ApplicationId:            common.String(applicationID),
+		UpdateApplicationDetails: updateDetails,
 	})
 	if err != nil {
+		reason := "ApplicationUpdateFailed"
+		message := fmt.Sprintf("Failed to update OCI Functions application %q configuration: %v", desired.DisplayName, err)
+		errorMessage := fmt.Sprintf("update OCI Functions application %s configuration: %v", applicationID, err)
+		if desired.ManageApplicationNSGIDs {
+			reason = "ApplicationNSGUpdateFailed"
+			message = fmt.Sprintf("Failed to update OCI Functions application %q NSG configuration to %s: %v", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs), err)
+			errorMessage = fmt.Sprintf("update OCI Functions application %s NSG configuration: %v", applicationID, err)
+		}
 		event := Event{
 			Type:    EventTypeWarning,
-			Reason:  "ApplicationNSGUpdateFailed",
-			Message: fmt.Sprintf("Failed to update OCI Functions application %q NSG configuration to %s: %v", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs), err),
+			Reason:  reason,
+			Message: message,
 		}
-		return application, []Event{event}, fmt.Errorf("update OCI Functions application %s NSG configuration: %w", applicationID, err)
+		return application, []Event{event}, fmt.Errorf("%s", errorMessage)
 	}
 
-	event := Event{
-		Type:    EventTypeNormal,
-		Reason:  "ApplicationNSGsUpdated",
-		Message: fmt.Sprintf("Updated OCI Functions application %q NSG configuration to %s.", desired.ApplicationName, formatStringList(desired.ApplicationNSGIDs)),
+	events := []Event{}
+	if desired.ManageApplicationNSGIDs {
+		events = append(events, Event{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationNSGsUpdated",
+			Message: fmt.Sprintf("Updated OCI Functions application %q NSG configuration to %s.", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs)),
+		})
 	}
-	return updated.Application, []Event{event}, nil
+	return updated.Application, events, nil
 }
 
 func (o *OCI) ensureFunction(ctx context.Context, desired DesiredFunction, applicationID string) (ocifunctions.Function, error) {
@@ -473,6 +686,81 @@ func validateDesiredFunction(desired DesiredFunction) error {
 		return fmt.Errorf("managed Function requires spec.config.timeoutInSeconds")
 	}
 	return nil
+}
+
+func validateDesiredFunctionInApplication(desired DesiredFunctionInApplication) error {
+	switch {
+	case strings.TrimSpace(desired.Region) == "":
+		return fmt.Errorf("managed Function with applicationRef requires referenced FunctionApplication status.region")
+	case strings.TrimSpace(desired.ApplicationID) == "":
+		return fmt.Errorf("managed Function with applicationRef requires referenced FunctionApplication status.applicationId")
+	case strings.TrimSpace(desired.DisplayName) == "":
+		return fmt.Errorf("managed Function requires spec.config.displayName")
+	case strings.TrimSpace(desired.Image) == "":
+		return fmt.Errorf("managed Function requires spec.config.image")
+	case desired.MemoryInMBs <= 0:
+		return fmt.Errorf("managed Function requires spec.config.memoryInMBs")
+	case desired.TimeoutInSeconds <= 0:
+		return fmt.Errorf("managed Function requires spec.config.timeoutInSeconds")
+	}
+	return nil
+}
+
+func validateDesiredApplication(desired DesiredApplication) error {
+	region := effectiveApplicationRegion(desired.Region, desired.ExistingApplicationID)
+	switch {
+	case strings.TrimSpace(region) == "":
+		return fmt.Errorf("FunctionApplication requires spec.region unless spec.existingApplicationId contains a region")
+	case desired.Mode == "":
+		return fmt.Errorf("FunctionApplication requires mode")
+	case desired.Mode != ApplicationModeManaged && desired.Mode != ApplicationModeExisting:
+		return fmt.Errorf("FunctionApplication mode must be Managed or Existing")
+	case strings.TrimSpace(desired.ExistingApplicationID) == "" && strings.TrimSpace(desired.CompartmentID) == "":
+		return fmt.Errorf("FunctionApplication requires spec.compartmentId when spec.existingApplicationId is empty")
+	case strings.TrimSpace(desired.ExistingApplicationID) == "" && strings.TrimSpace(desired.DisplayName) == "":
+		return fmt.Errorf("FunctionApplication requires spec.displayName when spec.existingApplicationId is empty")
+	case desired.Mode == ApplicationModeManaged && strings.TrimSpace(desired.ExistingApplicationID) == "" && len(desired.SubnetIDs) == 0:
+		return fmt.Errorf("managed FunctionApplication requires spec.subnetIds")
+	case desired.ManageApplicationNSGIDs && hasEmptyString(desired.ApplicationNSGIDs):
+		return fmt.Errorf("FunctionApplication requires spec.nsgIds entries to be non-empty")
+	}
+	return nil
+}
+
+func desiredApplicationFromFunction(desired DesiredFunction) DesiredApplication {
+	return DesiredApplication{
+		Mode:                           ApplicationModeManaged,
+		Region:                         desired.Region,
+		CompartmentID:                  desired.CompartmentID,
+		DisplayName:                    desired.ApplicationName,
+		SubnetIDs:                      desired.SubnetIDs,
+		ApplicationNSGIDs:              desired.ApplicationNSGIDs,
+		ManageApplicationNSGIDs:        desired.ManageApplicationNSGIDs,
+		FreeformTags:                   copyStringMap(desired.FreeformTags),
+		ManageApplicationConfiguration: false,
+	}
+}
+
+func effectiveApplicationRegion(region, applicationID string) string {
+	if strings.TrimSpace(region) != "" {
+		return strings.TrimSpace(region)
+	}
+	parts := strings.Split(strings.TrimSpace(applicationID), ".")
+	if len(parts) >= 5 && parts[0] == "ocid1" && parts[1] == "fnapp" {
+		return parts[3]
+	}
+	return ""
+}
+
+func effectiveFunctionRegion(region, functionID string) string {
+	if strings.TrimSpace(region) != "" {
+		return strings.TrimSpace(region)
+	}
+	parts := strings.Split(strings.TrimSpace(functionID), ".")
+	if len(parts) >= 5 && parts[0] == "ocid1" && parts[1] == "fnfunc" {
+		return parts[3]
+	}
+	return ""
 }
 
 func isOCIServiceNotFound(err error) bool {

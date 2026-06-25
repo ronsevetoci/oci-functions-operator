@@ -10,9 +10,10 @@ ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
 
 ## MVP Feature Summary
 
-The MVP adds four namespaced CRDs:
+The MVP adds five namespaced CRDs:
 
-- `Function`: references an existing OCI Function or manages an OCI Functions application/function.
+- `FunctionApplication`: models a real OCI Functions Application, including compartment, region, subnets, NSGs, and application-level config.
+- `Function`: references an existing OCI Function or manages an OCI Function inside a referenced `FunctionApplication`. Legacy one-object managed manifests are still supported.
 - `FunctionJob`: invokes a referenced `Function`, fans out inline JSON payloads, retries failed invocations, and records aggregate/per-payload status.
 - `FunctionEventTrigger`: creates OCI Events Rules for OCI service events such as Object Storage events, or routes Kubernetes-native `functionevent.*` events to a referenced `Function`.
 - `FunctionEvent`: Kubernetes-native event object for direct operator-routed invocation through `functionevent.*` event types.
@@ -51,9 +52,11 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 - On OKE, the Helm chart configures Workload Identity with `oci.authMode=workload`.
 - For local development only, use `OCI_AUTH_MODE=config` with `OCI_CONFIG_FILE` and `OCI_CONFIG_PROFILE`.
 
-Existing mode requires `spec.functionId` and `spec.invokeEndpoint` on the `Function`. Managed mode uses `spec.config` to create/update the OCI Functions application and function, then writes `status.applicationId`, `status.functionId`, and `status.invokeEndpoint`.
+Existing mode requires `spec.functionId` and `spec.invokeEndpoint` on the `Function`. Preferred managed mode creates a `FunctionApplication` for the shared OCI application, then a `Function` with `spec.applicationRef.name` for the OCI Function. The controller waits for the application to be Ready, uses `FunctionApplication.status.applicationId`, and writes `Function.status.applicationId`, `status.functionId`, and `status.invokeEndpoint`.
 
-`Function.spec.deletionPolicy` defaults to `Retain`. Deleting a managed `Function` with `Retain` leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. The OCI Functions application is retained in this MVP. Existing mode never deletes OCI resources.
+Legacy managed `Function` manifests that put application settings under `spec.config` still work for compatibility and simple demos, but new manifests should use `FunctionApplication`.
+
+`Function.spec.deletionPolicy` defaults to `Retain`. Deleting a managed `Function` with `Retain` leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. `FunctionApplication.spec.deletionPolicy` separately controls OCI Application cleanup; `Delete` is honored only for managed applications and only when no functions remain. Existing mode never deletes OCI resources.
 
 ## Local Fake Demo
 
@@ -87,8 +90,9 @@ For OKE managed mode:
 1. Build and push the operator/controller image to a registry OKE can pull.
 2. Build a Fn-compatible function runtime image and push it to same-region OCIR.
 3. Deploy the operator with Helm. The chart is the supported OKE path and defaults to OCI mode with Workload Identity.
-4. Apply a managed `Function` with `spec.config.region`, `compartmentId`, `applicationName`, `subnetIds`, optional `nsgIds`, and same-region OCIR `image`.
-5. Submit a `FunctionJob`, create a `FunctionEventTrigger`, or emit a `FunctionEvent` after the `Function` is Ready.
+4. Apply a managed `FunctionApplication` with region, compartment, subnet IDs, optional NSG IDs, and application-level config.
+5. Apply a managed `Function` with `spec.applicationRef.name`, function display name, same-region OCIR image, memory, timeout, and function config.
+6. Submit a `FunctionJob`, create a `FunctionEventTrigger`, or emit a `FunctionEvent` after the `Function` is Ready.
 
 See [docs/helm-install.md](docs/helm-install.md) for installation and [docs/managed-function-demo.md](docs/managed-function-demo.md) for the full Function sequence.
 

@@ -13,6 +13,7 @@ import (
 	functionsv1alpha1 "github.com/oracle/oci-functions-operator/api/v1alpha1"
 	"github.com/oracle/oci-functions-operator/internal/lifecycle"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -80,15 +81,40 @@ func (r *FunctionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	referencedApplication, waitingForApplication, err := r.resolveFunctionApplicationRef(ctx, &function, desiredObject, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if waitingForApplication {
+		result = ctrl.Result{RequeueAfter: 30 * time.Second}
+		patched, err := r.updateFunctionStatusIfChanged(ctx, &function, desiredObject.Status, true)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if patched {
+			logger.V(1).Info("updated Function status", "phase", desiredObject.Status.Phase)
+		}
+		return result, nil
+	}
+
 	switch mode {
 	case functionsv1alpha1.FunctionModeExisting:
 		if function.DeletionPolicy() == functionsv1alpha1.FunctionDeletionPolicyDelete {
 			reconcileExistingFunctionDeletePolicyError(desiredObject, now)
 		} else {
 			reconcileExistingFunctionStatus(desiredObject, now)
+			if referencedApplication != nil {
+				desiredObject.Status.ApplicationID = referencedApplication.Status.ApplicationID
+			}
 		}
 	case functionsv1alpha1.FunctionModeManaged:
-		pending, err := r.reconcileManagedFunctionStatus(ctx, desiredObject, now)
+		var pending bool
+		var err error
+		if referencedApplication != nil {
+			pending, err = r.reconcileManagedFunctionWithApplicationRef(ctx, desiredObject, referencedApplication, now)
+		} else {
+			pending, err = r.reconcileManagedFunctionStatus(ctx, desiredObject, now)
+		}
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -186,6 +212,59 @@ func (r *FunctionReconciler) reconcileDelete(ctx context.Context, function *func
 	return ctrl.Result{}, nil
 }
 
+func (r *FunctionReconciler) resolveFunctionApplicationRef(ctx context.Context, function *functionsv1alpha1.Function, desiredObject *functionsv1alpha1.Function, now metav1.Time) (*functionsv1alpha1.FunctionApplication, bool, error) {
+	if function.Spec.ApplicationRef == nil || strings.TrimSpace(function.Spec.ApplicationRef.Name) == "" {
+		return nil, false, nil
+	}
+	if hasLegacyApplicationFields(function.Spec.Config) {
+		desiredObject.Status.Phase = functionsv1alpha1.FunctionPhaseError
+		desiredObject.Status.Message = "spec.applicationRef cannot be combined with legacy application fields in spec.config: region, compartmentId, applicationName, subnetIds, nsgIds, or applicationOcid."
+		desiredObject.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidApplicationRef",
+			Message:            desiredObject.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return nil, true, nil
+	}
+
+	var application functionsv1alpha1.FunctionApplication
+	key := client.ObjectKey{Namespace: function.Namespace, Name: strings.TrimSpace(function.Spec.ApplicationRef.Name)}
+	if err := r.Get(ctx, key, &application); err != nil {
+		if apierrors.IsNotFound(err) {
+			desiredObject.Status.Phase = functionsv1alpha1.FunctionPhasePending
+			desiredObject.Status.Message = fmt.Sprintf("Waiting for FunctionApplication %q to exist.", key.Name)
+			desiredObject.SetCondition(metav1.Condition{
+				Type:               functionsv1alpha1.FunctionConditionReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             "FunctionApplicationNotFound",
+				Message:            desiredObject.Status.Message,
+				ObservedGeneration: function.Generation,
+				LastTransitionTime: now,
+			})
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	if !application.IsReady() || strings.TrimSpace(application.Status.ApplicationID) == "" {
+		desiredObject.Status.ApplicationID = application.Status.ApplicationID
+		desiredObject.Status.Phase = functionsv1alpha1.FunctionPhasePending
+		desiredObject.Status.Message = fmt.Sprintf("Waiting for FunctionApplication %q to become Ready.", application.Name)
+		desiredObject.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "FunctionApplicationNotReady",
+			Message:            desiredObject.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return nil, true, nil
+	}
+	return &application, false, nil
+}
+
 func reconcileExistingFunctionStatus(function *functionsv1alpha1.Function, now metav1.Time) {
 	functionID := resolvedSpecFunctionID(function)
 	invokeEndpoint := strings.TrimSpace(function.Spec.InvokeEndpoint)
@@ -232,6 +311,92 @@ func reconcileExistingFunctionDeletePolicyError(function *functionsv1alpha1.Func
 	})
 }
 
+func (r *FunctionReconciler) reconcileManagedFunctionWithApplicationRef(ctx context.Context, function *functionsv1alpha1.Function, application *functionsv1alpha1.FunctionApplication, now metav1.Time) (bool, error) {
+	if function.Spec.Config == nil {
+		function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+		function.Status.ApplicationID = application.Status.ApplicationID
+		function.Status.Message = "Managed Function mode with applicationRef requires spec.config for function-level fields."
+		function.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidManagedFunction",
+			Message:            function.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return false, nil
+	}
+	if r.Manager == nil {
+		function.Status.Phase = functionsv1alpha1.FunctionPhasePending
+		function.Status.ApplicationID = application.Status.ApplicationID
+		function.Status.Message = "Function lifecycle manager is not configured; run the manager with INVOKER_MODE=oci for managed Functions."
+		function.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "LifecycleManagerNotConfigured",
+			Message:            function.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return true, nil
+	}
+
+	state, err := r.Manager.EnsureFunctionInApplication(ctx, desiredFunctionInApplicationFromSpec(function, application))
+	r.recordLifecycleEvents(function, state.Events)
+	if err != nil {
+		function.Status.ApplicationID = state.ApplicationID
+		if function.Status.ApplicationID == "" {
+			function.Status.ApplicationID = application.Status.ApplicationID
+		}
+		function.Status.FunctionOCID = state.FunctionID
+		function.Status.FunctionID = state.FunctionID
+		function.Status.InvokeEndpoint = state.InvokeEndpoint
+		function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+		function.Status.Message = err.Error()
+		function.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "ManagedFunctionError",
+			Message:            err.Error(),
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return false, nil
+	}
+
+	function.Status.ApplicationID = application.Status.ApplicationID
+	function.Status.FunctionOCID = state.FunctionID
+	function.Status.FunctionID = state.FunctionID
+	function.Status.InvokeEndpoint = state.InvokeEndpoint
+	function.Status.Message = state.Message
+	if function.Status.Message == "" {
+		function.Status.Message = "Managed OCI Function is reconciling."
+	}
+	if state.Ready {
+		function.Status.Phase = functionsv1alpha1.FunctionPhaseReady
+		function.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ManagedFunctionReady",
+			Message:            function.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return false, nil
+	}
+
+	function.Status.Phase = functionsv1alpha1.FunctionPhasePending
+	function.SetCondition(metav1.Condition{
+		Type:               functionsv1alpha1.FunctionConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ManagedFunctionPending",
+		Message:            function.Status.Message,
+		ObservedGeneration: function.Generation,
+		LastTransitionTime: now,
+	})
+	return true, nil
+}
+
 func (r *FunctionReconciler) reconcileManagedFunctionStatus(ctx context.Context, function *functionsv1alpha1.Function, now metav1.Time) (bool, error) {
 	if function.Spec.Config == nil {
 		function.Status.Phase = functionsv1alpha1.FunctionPhaseError
@@ -241,6 +406,19 @@ func (r *FunctionReconciler) reconcileManagedFunctionStatus(ctx context.Context,
 			Status:             metav1.ConditionFalse,
 			Reason:             "InvalidManagedFunction",
 			Message:            "Managed Function mode requires spec.config.",
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return false, nil
+	}
+	if err := validateLegacyManagedFunctionConfig(function.Spec.Config); err != nil {
+		function.Status.Phase = functionsv1alpha1.FunctionPhaseError
+		function.Status.Message = err.Error()
+		function.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidManagedFunction",
+			Message:            function.Status.Message,
 			ObservedGeneration: function.Generation,
 			LastTransitionTime: now,
 		})
@@ -325,6 +503,9 @@ func resolvedFunctionMode(function *functionsv1alpha1.Function) functionsv1alpha
 	if function.Spec.Config != nil {
 		return functionsv1alpha1.FunctionModeManaged
 	}
+	if function.Spec.ApplicationRef != nil {
+		return functionsv1alpha1.FunctionModeManaged
+	}
 	return ""
 }
 
@@ -358,12 +539,27 @@ func desiredFunctionFromSpec(function *functionsv1alpha1.Function) lifecycle.Des
 	}
 }
 
+func desiredFunctionInApplicationFromSpec(function *functionsv1alpha1.Function, application *functionsv1alpha1.FunctionApplication) lifecycle.DesiredFunctionInApplication {
+	config := function.Spec.Config
+	return lifecycle.DesiredFunctionInApplication{
+		Region:           strings.TrimSpace(application.Status.Region),
+		ApplicationID:    strings.TrimSpace(application.Status.ApplicationID),
+		DisplayName:      strings.TrimSpace(config.DisplayName),
+		Image:            strings.TrimSpace(config.Image),
+		MemoryInMBs:      desiredMemoryInMBs(config),
+		TimeoutInSeconds: desiredTimeoutInSeconds(config),
+		Config:           desiredConfigMap(config),
+		FreeformTags:     copyStringMap(config.FreeformTags),
+	}
+}
+
 func managedFunctionDeleteTarget(function *functionsv1alpha1.Function) lifecycle.ManagedFunctionDeleteTarget {
 	functionID := strings.TrimSpace(function.Status.FunctionID)
 	if functionID == "" {
 		functionID = strings.TrimSpace(function.Status.FunctionOCID)
 	}
 	target := lifecycle.ManagedFunctionDeleteTarget{FunctionID: functionID}
+	target.ApplicationID = strings.TrimSpace(function.Status.ApplicationID)
 	if function.Spec.Config == nil {
 		return target
 	}
@@ -372,6 +568,32 @@ func managedFunctionDeleteTarget(function *functionsv1alpha1.Function) lifecycle
 	target.ApplicationName = strings.TrimSpace(function.Spec.Config.ApplicationName)
 	target.DisplayName = strings.TrimSpace(function.Spec.Config.DisplayName)
 	return target
+}
+
+func hasLegacyApplicationFields(config *functionsv1alpha1.FunctionConfig) bool {
+	if config == nil {
+		return false
+	}
+	return strings.TrimSpace(config.Region) != "" ||
+		strings.TrimSpace(config.CompartmentID) != "" ||
+		strings.TrimSpace(config.ApplicationName) != "" ||
+		strings.TrimSpace(config.ApplicationOCID) != "" ||
+		len(config.SubnetIDs) > 0 ||
+		config.NSGIDs != nil
+}
+
+func validateLegacyManagedFunctionConfig(config *functionsv1alpha1.FunctionConfig) error {
+	switch {
+	case strings.TrimSpace(config.Region) == "":
+		return fmt.Errorf("managed Function requires spec.config.region when spec.applicationRef is not set")
+	case strings.TrimSpace(config.CompartmentID) == "":
+		return fmt.Errorf("managed Function requires spec.config.compartmentId when spec.applicationRef is not set")
+	case strings.TrimSpace(config.ApplicationName) == "":
+		return fmt.Errorf("managed Function requires spec.config.applicationName when spec.applicationRef is not set")
+	case len(config.SubnetIDs) == 0:
+		return fmt.Errorf("managed Function requires spec.config.subnetIds when spec.applicationRef is not set")
+	}
+	return nil
 }
 
 func deletionErrorStatus(function *functionsv1alpha1.Function, now metav1.Time, reason, message string) functionsv1alpha1.FunctionStatus {

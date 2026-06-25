@@ -6,9 +6,9 @@ Kustomize manifests under `config/` are retained for Kubebuilder-generated resou
 
 ## What Gets Installed
 
-- CRDs for `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
+- CRDs for `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 - A controller manager Deployment in `oci-functions-operator-system`.
-- RBAC for watching `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent` resources and writing status/events.
+- RBAC for watching `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent` resources and writing status/events.
 - OCI mode configured for OKE Workload Identity.
 
 ## Prerequisites
@@ -51,7 +51,7 @@ Confirm the deployment and CRDs:
 
 ```sh
 kubectl -n oci-functions-operator-system rollout status deployment/oci-functions-operator-controller-manager
-kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com
+kubectl get crd functionapplications.functions.oci.oracle.com functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com
 ```
 
 ## OKE Workload Identity Auth
@@ -126,7 +126,7 @@ Managed mode creates or updates an OCI Functions application. OCI Functions pull
 
 - The Functions application subnet must have a route to Oracle Services Network/OCIR, usually through a Service Gateway.
 - Subnet security lists must allow the required HTTPS egress.
-- If `spec.config.nsgIds` attaches NSGs to the Functions application, those NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
+- If `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds` attaches NSGs to the Functions application, those NSGs must allow egress TCP 443 to Oracle Services Network/OCIR.
 
 Missing NSG egress can surface only at invocation time as:
 
@@ -142,9 +142,9 @@ Confirm no local OCI credential Secret is mounted:
 kubectl -n oci-functions-operator-system get deployment oci-functions-operator-controller-manager -o yaml
 ```
 
-## Managed Function Mode
+## Managed FunctionApplication And Function Mode
 
-Create a managed `Function`. This example targets Jeddah with region identifier `me-jeddah-1`:
+Create a managed `FunctionApplication`, then a managed `Function` that references it. This example targets Jeddah with region identifier `me-jeddah-1`:
 
 ```sh
 export COMPARTMENT_OCID="ocid1.compartment.oc1..exampleuniqueid"
@@ -154,22 +154,34 @@ export FUNCTION_IMAGE="jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1"
 
 cat <<EOF | kubectl apply -f -
 apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionApplication
+metadata:
+  name: oci-managed-app
+spec:
+  mode: Managed
+  deletionPolicy: Retain
+  region: me-jeddah-1
+  compartmentId: ${COMPARTMENT_OCID}
+  displayName: oci-functions-operator-demo
+  subnetIds:
+  - ${SUBNET_OCID}
+  # Optional: uncomment when the Functions application should use NSGs.
+  # The NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
+  # nsgIds:
+  # - ${NSG_OCID}
+  config:
+    LOG_LEVEL: info
+---
+apiVersion: functions.oci.oracle.com/v1alpha1
 kind: Function
 metadata:
   name: oci-managed-hello
 spec:
   mode: Managed
   deletionPolicy: Retain
+  applicationRef:
+    name: oci-managed-app
   config:
-    region: me-jeddah-1
-    compartmentId: ${COMPARTMENT_OCID}
-    applicationName: oci-functions-operator-demo
-    subnetIds:
-    - ${SUBNET_OCID}
-    # Optional: uncomment when the Functions application should use NSGs.
-    # The NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
-    # nsgIds:
-    # - ${NSG_OCID}
     displayName: oci-managed-hello
     image: ${FUNCTION_IMAGE}
     memoryInMBs: 128
@@ -179,15 +191,18 @@ spec:
 EOF
 ```
 
-Watch status until `Ready=True` and these fields are populated:
+Watch status until both resources are `Ready=True`:
 
 ```sh
+kubectl get functionapplication oci-managed-app -o yaml
 kubectl get function oci-managed-hello -o yaml
 ```
 
 - `status.applicationId`
 - `status.functionId`
 - `status.invokeEndpoint`
+
+Legacy managed `Function` manifests that put `region`, `compartmentId`, `applicationName`, `subnetIds`, and `nsgIds` under `spec.config` remain supported for backward compatibility. Prefer `FunctionApplication` for new manifests because OCI Functions Applications are shared resources.
 
 ## Existing Function Mode
 
@@ -222,7 +237,14 @@ kubectl patch function oci-managed-hello --type=merge -p '{"spec":{"deletionPoli
 kubectl delete function oci-managed-hello
 ```
 
-The controller uses a finalizer, deletes the OCI Function by `status.functionId` when available, and treats an already-missing OCI Function as successful cleanup. The OCI Functions application is retained in this MVP. Existing mode never deletes OCI resources, even if `deletionPolicy: Delete` is set.
+The controller uses a finalizer, deletes the OCI Function by `status.functionId` when available, and treats an already-missing OCI Function as successful cleanup. Existing mode never deletes OCI resources, even if `deletionPolicy: Delete` is set.
+
+`FunctionApplication.spec.deletionPolicy` controls OCI Application cleanup separately. `Retain` is the default. `Delete` is honored only for managed applications and only when no functions remain:
+
+```sh
+kubectl patch functionapplication oci-managed-app --type=merge -p '{"spec":{"deletionPolicy":"Delete"}}'
+kubectl delete functionapplication oci-managed-app
+```
 
 ## Submit A FunctionJob
 
@@ -284,19 +306,21 @@ Checks:
 - Confirm the IAM policy matches the namespace, service account, cluster OCID, and target compartments.
 - If logs still say `OCI_RESOURCE_PRINCIPAL_REGION` is missing, confirm the deployed operator image includes the Workload Identity auth fix.
 
-### Managed Function Reconcile Errors
+### Managed FunctionApplication Or Function Reconcile Errors
 
 Symptoms:
 
+- `FunctionApplication.status.phase=Error`.
 - `Function.status.phase=Error`.
 - `Function.status.message` mentions listing, creating, getting, or updating OCI Functions applications/functions.
 
 Checks:
 
-- Confirm `spec.config.region` is a valid OCI region identifier such as `me-jeddah-1`.
-- Confirm `spec.config.compartmentId` is the Functions compartment.
-- Confirm `spec.config.subnetIds` are valid and usable by OCI Functions.
-- If `spec.config.nsgIds` is set, confirm the NSG OCIDs are valid and can be attached to the Functions application.
+- Confirm `FunctionApplication.spec.region` is a valid OCI region identifier such as `me-jeddah-1`.
+- Confirm `FunctionApplication.spec.compartmentId` is the Functions compartment.
+- Confirm `FunctionApplication.spec.subnetIds` are valid and usable by OCI Functions.
+- If `FunctionApplication.spec.nsgIds` is set, confirm the NSG OCIDs are valid and can be attached to the Functions application.
+- If using the legacy one-object Function path, check the equivalent fields under `Function.spec.config`.
 - Confirm IAM policy allows managing `fn-app` and `fn-function`.
 - Confirm the function image is in same-region OCIR and OCI Functions can pull it.
 
@@ -313,7 +337,7 @@ Checks:
 - Confirm the image is in the expected same-region registry, such as Jeddah OCIR `jed.ocir.io`.
 - Confirm the Functions application subnet route table sends Oracle Services Network/OCIR traffic through a Service Gateway.
 - Confirm subnet security lists allow HTTPS egress.
-- If the Functions application has NSGs from `spec.config.nsgIds`, confirm those NSGs allow egress TCP 443 to Oracle Services Network/OCIR.
+- If the Functions application has NSGs from `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds`, confirm those NSGs allow egress TCP 443 to Oracle Services Network/OCIR.
 - Remember that public OCIR repository visibility does not bypass network egress requirements.
 
 ### Placeholder Controller Image
@@ -380,7 +404,7 @@ Symptoms:
 
 Checks:
 
-- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, status/finalizers, and core `events`.
+- Confirm `helm template` contains the ClusterRole rules for `functionapplications`, `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, status/finalizers, and core `events`.
 - Re-run `helm upgrade` if the ClusterRole drifted.
 - Confirm the deployment uses service account `oci-functions-operator-controller-manager`.
 - Do not patch a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
@@ -391,4 +415,4 @@ Checks:
 
 ## Current MVP Boundary
 
-This deployment supports existing Function references, managed application/function reconciliation, opt-in deletion of managed OCI Functions, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. OCI Functions application deletion, image build/push workflows, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.
+This deployment supports explicit `FunctionApplication` reconciliation, existing Function references, managed Function reconciliation, opt-in deletion of managed OCI Functions and empty managed OCI Applications, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. Image build/push workflows, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.
