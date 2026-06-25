@@ -167,6 +167,16 @@ spec:
                 - region
                 - subnetIds
                 type: object
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy controls what happens to OCI resources when this Kubernetes Function is deleted.
+                  Defaults to Retain for safety. Delete is honored only for Managed mode and deletes the managed OCI Function.
+                  The OCI Functions application is retained in this MVP.
+                enum:
+                - Retain
+                - Delete
+                type: string
               existingFunctionOcid:
                 description: |-
                   ExistingFunctionOCID points at an existing OCI Functions function.

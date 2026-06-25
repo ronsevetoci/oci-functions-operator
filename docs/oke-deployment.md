@@ -159,6 +159,7 @@ metadata:
   name: oci-managed-hello
 spec:
   mode: Managed
+  deletionPolicy: Retain
   config:
     region: me-jeddah-1
     compartmentId: ${COMPARTMENT_OCID}
@@ -209,6 +210,19 @@ EOF
 ```
 
 The operator copies the OCID and endpoint into status and marks the `Function` Ready.
+
+## Managed Function Deletion
+
+`Function.spec.deletionPolicy` defaults to `Retain` for safety. With `Retain`, deleting a Kubernetes `Function` removes only the Kubernetes object and leaves the OCI Function and OCI Functions application untouched.
+
+For managed mode only, set `deletionPolicy: Delete` when deleting the Kubernetes `Function` should also delete the managed OCI Function:
+
+```sh
+kubectl patch function oci-managed-hello --type=merge -p '{"spec":{"deletionPolicy":"Delete"}}'
+kubectl delete function oci-managed-hello
+```
+
+The controller uses a finalizer, deletes the OCI Function by `status.functionId` when available, and treats an already-missing OCI Function as successful cleanup. The OCI Functions application is retained in this MVP. Existing mode never deletes OCI resources, even if `deletionPolicy: Delete` is set.
 
 ## Submit A FunctionJob
 
@@ -377,4 +391,4 @@ Checks:
 
 ## Current MVP Boundary
 
-This deployment supports existing Function references, managed application/function reconciliation, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. Image build/push workflows, Function deletion, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.
+This deployment supports existing Function references, managed application/function reconciliation, opt-in deletion of managed OCI Functions, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. OCI Functions application deletion, image build/push workflows, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.

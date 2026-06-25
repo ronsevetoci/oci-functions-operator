@@ -21,6 +21,15 @@ type DesiredFunction struct {
 	FreeformTags            map[string]string
 }
 
+// ManagedFunctionDeleteTarget identifies a managed OCI Function to delete.
+type ManagedFunctionDeleteTarget struct {
+	Region          string
+	CompartmentID   string
+	ApplicationName string
+	DisplayName     string
+	FunctionID      string
+}
+
 // EventType is the SDK-free severity for lifecycle events.
 type EventType string
 
@@ -48,7 +57,17 @@ type FunctionState struct {
 	Events         []Event
 }
 
+// FunctionDeletionState is the SDK-free outcome of managed OCI Function cleanup.
+type FunctionDeletionState struct {
+	ApplicationID string
+	FunctionID    string
+	Deleted       bool
+	Message       string
+	Events        []Event
+}
+
 // Manager reconciles OCI Functions lifecycle behind a small SDK-free contract.
 type Manager interface {
 	EnsureFunction(ctx context.Context, desired DesiredFunction) (FunctionState, error)
+	DeleteManagedFunction(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error)
 }

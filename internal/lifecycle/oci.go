@@ -40,6 +40,7 @@ type functionsManagementClient interface {
 	CreateFunction(context.Context, ocifunctions.CreateFunctionRequest) (ocifunctions.CreateFunctionResponse, error)
 	GetFunction(context.Context, ocifunctions.GetFunctionRequest) (ocifunctions.GetFunctionResponse, error)
 	UpdateFunction(context.Context, ocifunctions.UpdateFunctionRequest) (ocifunctions.UpdateFunctionResponse, error)
+	DeleteFunction(context.Context, ocifunctions.DeleteFunctionRequest) (ocifunctions.DeleteFunctionResponse, error)
 }
 
 type managementClientFactory func(common.ConfigurationProvider) (functionsManagementClient, error)
@@ -143,6 +144,141 @@ func (o *OCI) EnsureFunction(ctx context.Context, desired DesiredFunction) (Func
 	state.Ready = true
 	state.Message = "Managed OCI Function is ready."
 	return state, nil
+}
+
+// DeleteManagedFunction deletes a managed OCI Function and intentionally retains the OCI application.
+func (o *OCI) DeleteManagedFunction(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error) {
+	if o == nil || o.client == nil {
+		return FunctionDeletionState{}, fmt.Errorf("oci lifecycle manager is not configured")
+	}
+	if strings.TrimSpace(target.Region) == "" {
+		return FunctionDeletionState{}, fmt.Errorf("managed Function deletion requires spec.config.region")
+	}
+
+	o.client.SetRegion(strings.TrimSpace(target.Region))
+
+	functionID := strings.TrimSpace(target.FunctionID)
+	state := FunctionDeletionState{FunctionID: functionID}
+	if functionID == "" {
+		resolved, err := o.resolveFunctionForDelete(ctx, target)
+		if err != nil {
+			return state, err
+		}
+		state.ApplicationID = resolved.ApplicationID
+		state.FunctionID = resolved.FunctionID
+		functionID = resolved.FunctionID
+		if functionID == "" {
+			state.Message = "Managed OCI Function was not found; nothing to delete. OCI Functions application retained."
+			state.Events = []Event{{
+				Type:    EventTypeNormal,
+				Reason:  "ManagedFunctionAlreadyDeleted",
+				Message: state.Message,
+			}}
+			return state, nil
+		}
+	}
+
+	if err := o.deleteFunctionByID(ctx, functionID); err != nil {
+		return state, err
+	}
+
+	state.Deleted = true
+	state.Message = fmt.Sprintf("Deleted managed OCI Function %s. OCI Functions application retained.", functionID)
+	state.Events = []Event{{
+		Type:    EventTypeNormal,
+		Reason:  "ManagedFunctionDeleted",
+		Message: state.Message,
+	}}
+	return state, nil
+}
+
+func (o *OCI) deleteFunctionByID(ctx context.Context, functionID string) error {
+	if strings.TrimSpace(functionID) == "" {
+		return fmt.Errorf("managed Function deletion requires an OCI Function OCID")
+	}
+	_, err := o.client.DeleteFunction(ctx, ocifunctions.DeleteFunctionRequest{FunctionId: common.String(functionID)})
+	if err != nil {
+		if isOCIServiceNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("delete OCI Function %s: %w", functionID, err)
+	}
+	return nil
+}
+
+func (o *OCI) resolveFunctionForDelete(ctx context.Context, target ManagedFunctionDeleteTarget) (FunctionDeletionState, error) {
+	state := FunctionDeletionState{}
+	switch {
+	case strings.TrimSpace(target.CompartmentID) == "":
+		return state, fmt.Errorf("managed Function deletion requires spec.config.compartmentId when status.functionId is empty")
+	case strings.TrimSpace(target.ApplicationName) == "":
+		return state, fmt.Errorf("managed Function deletion requires spec.config.applicationName when status.functionId is empty")
+	case strings.TrimSpace(target.DisplayName) == "":
+		return state, fmt.Errorf("managed Function deletion requires spec.config.displayName when status.functionId is empty")
+	}
+
+	applications, err := o.client.ListApplications(ctx, ocifunctions.ListApplicationsRequest{
+		CompartmentId: common.String(strings.TrimSpace(target.CompartmentID)),
+		DisplayName:   common.String(strings.TrimSpace(target.ApplicationName)),
+		Limit:         common.Int(50),
+	})
+	if err != nil {
+		return state, fmt.Errorf("list OCI Functions applications for managed Function deletion: %w", err)
+	}
+
+	applicationIDs := []string{}
+	for _, application := range applications.Items {
+		if stringValue(application.DisplayName) != strings.TrimSpace(target.ApplicationName) {
+			continue
+		}
+		if application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleted || application.LifecycleState == ocifunctions.ApplicationLifecycleStateDeleting {
+			continue
+		}
+		applicationID := strings.TrimSpace(stringValue(application.Id))
+		if applicationID != "" {
+			applicationIDs = append(applicationIDs, applicationID)
+		}
+	}
+	switch len(applicationIDs) {
+	case 0:
+		return state, nil
+	case 1:
+		state.ApplicationID = applicationIDs[0]
+	default:
+		return state, fmt.Errorf("managed Function deletion cannot safely resolve application %q: multiple matching applications found", strings.TrimSpace(target.ApplicationName))
+	}
+
+	functions, err := o.client.ListFunctions(ctx, ocifunctions.ListFunctionsRequest{
+		ApplicationId: common.String(state.ApplicationID),
+		DisplayName:   common.String(strings.TrimSpace(target.DisplayName)),
+		Limit:         common.Int(50),
+	})
+	if err != nil {
+		return state, fmt.Errorf("list OCI Functions for managed Function deletion in application %s: %w", state.ApplicationID, err)
+	}
+
+	functionIDs := []string{}
+	for _, function := range functions.Items {
+		if stringValue(function.DisplayName) != strings.TrimSpace(target.DisplayName) {
+			continue
+		}
+		if function.LifecycleState == ocifunctions.FunctionLifecycleStateDeleted || function.LifecycleState == ocifunctions.FunctionLifecycleStateDeleting {
+			continue
+		}
+		functionID := strings.TrimSpace(stringValue(function.Id))
+		if functionID != "" {
+			functionIDs = append(functionIDs, functionID)
+		}
+	}
+	switch len(functionIDs) {
+	case 0:
+		return state, nil
+	case 1:
+		state.FunctionID = functionIDs[0]
+		return state, nil
+	default:
+		return state, fmt.Errorf("managed Function deletion cannot safely resolve function %q in application %q: multiple matching functions found", strings.TrimSpace(target.DisplayName), strings.TrimSpace(target.ApplicationName))
+	}
 }
 
 func (o *OCI) ensureApplication(ctx context.Context, desired DesiredFunction) (ocifunctions.Application, []Event, error) {
@@ -337,6 +473,11 @@ func validateDesiredFunction(desired DesiredFunction) error {
 		return fmt.Errorf("managed Function requires spec.config.timeoutInSeconds")
 	}
 	return nil
+}
+
+func isOCIServiceNotFound(err error) bool {
+	serviceErr, ok := common.IsServiceError(err)
+	return ok && serviceErr.GetHTTPStatusCode() == 404
 }
 
 func hasEmptyString(values []string) bool {

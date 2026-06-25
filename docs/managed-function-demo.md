@@ -121,6 +121,7 @@ metadata:
   namespace: default
 spec:
   mode: Managed
+  deletionPolicy: Retain
   config:
     region: me-jeddah-1
     compartmentId: <COMPARTMENT_OCID>
@@ -206,6 +207,23 @@ Expected success indicators:
 - `status.succeeded` equals the payload count.
 - per-payload `invocationStatuses[*].phase=Succeeded`.
 - per-payload `invocationId` and/or `ociRequestId` are populated after OCI invocation.
+
+## 6. Managed Function Cleanup
+
+`Function.spec.deletionPolicy` defaults to `Retain`, so deleting the Kubernetes `Function` leaves the OCI Function and OCI Functions application in place:
+
+```sh
+kubectl delete function managed-hello
+```
+
+For demo environments where the operator should delete the managed OCI Function, set `deletionPolicy: Delete` before deleting the resource:
+
+```sh
+kubectl patch function managed-hello --type=merge -p '{"spec":{"deletionPolicy":"Delete"}}'
+kubectl delete function managed-hello
+```
+
+The controller removes its finalizer only after the OCI Function is deleted or is already gone. The OCI Functions application is retained in this MVP; remove it manually if it should not remain.
 
 ## Troubleshooting
 

@@ -100,6 +100,7 @@ metadata:
   namespace: default
 spec:
   mode: Managed
+  deletionPolicy: Retain
   config:
     region: ${OCI_REGION}
     compartmentId: ${COMPARTMENT_OCID}
@@ -225,7 +226,7 @@ kubectl delete function managed-hello --ignore-not-found
 helm uninstall oci-functions-operator --namespace oci-functions-operator-system
 ```
 
-Helm leaves CRDs behind by design. Managed `Function` deletion removes the Kubernetes object, but this MVP does not delete the underlying OCI Functions application/function. Remove demo OCI resources manually if they should not remain.
+Helm leaves CRDs behind by design. Managed `Function` deletion defaults to `deletionPolicy: Retain`, so the Kubernetes object is removed and OCI resources stay in place. To let the operator delete the managed OCI Function during cleanup, set `spec.deletionPolicy: Delete` before deleting the `Function`. The OCI Functions application is still retained in this MVP.
 
 ## 9. Short Talk Track For Each Section
 

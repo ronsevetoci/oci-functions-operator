@@ -56,8 +56,19 @@ rules:
 - apiGroups:
   - functions.oci.oracle.com
   resources:
-  - functionjobs
   - functions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - functions.oci.oracle.com
+  resources:
+  - functionjobs
   verbs:
   - get
   - list

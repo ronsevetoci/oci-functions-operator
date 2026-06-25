@@ -36,4 +36,4 @@ Secondary guide. Use [MVP demo flow](mvp-demo-flow.md) for commands; this file i
 
 ## Close
 
-"The MVP demonstrates four useful primitives: manage a Function, invoke it as a job, connect OCI service events, and emit Kubernetes-native events. Schedules, watches, queues, workflows, and destructive OCI cleanup remain intentionally out of scope."
+"The MVP demonstrates four useful primitives: manage a Function, invoke it as a job, connect OCI service events, and emit Kubernetes-native events. Managed Function deletion is explicit and opt-in with `deletionPolicy: Delete`; applications are retained. Schedules, watches, queues, and workflows remain intentionally out of scope."
