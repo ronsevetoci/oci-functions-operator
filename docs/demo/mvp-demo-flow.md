@@ -62,13 +62,13 @@ fn push --registry "jed.ocir.io/<TENANCY_NAMESPACE>"
 
 ## 2. Install Operator With Helm
 
-Apply CRDs first. This is safe on fresh install and required before upgrades when CRDs changed:
+Apply CRDs first. Fresh Helm installs install CRDs, but existing Helm upgrades do not add or update CRDs from `crds/`. Before every MVP demo or upgrade, run:
 
 ```sh
 kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
-Install or upgrade:
+Then install or upgrade:
 
 ```sh
 helm upgrade --install oci-functions-operator charts/oci-functions-operator \

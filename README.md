@@ -43,6 +43,18 @@ Do not use GHCR for the OCI Functions runtime image. OCI Functions pulls the run
 - [Validation notes](docs/validation-notes.md): template for recording real OCI-mode runs.
 - [Sample function image](examples/hello-function/README.md): Fn-compatible Python function runtime image for the managed demo.
 
+## Helm CRDs
+
+The Helm chart includes CRDs for `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
+
+Fresh Helm installs install CRDs from `charts/oci-functions-operator/crds/`, but existing Helm upgrades do not add or update CRDs from that directory. Before every MVP demo or upgrade, apply the chart CRDs first:
+
+```sh
+kubectl apply -f charts/oci-functions-operator/crds/
+```
+
+Then run `helm upgrade --install`.
+
 ## Modes
 
 `INVOKER_MODE=fake` is the default. It requires no OCI auth, creates no OCI resources, and is useful only for CRD/controller/status demos.
@@ -89,10 +101,11 @@ For OKE managed mode:
 
 1. Build and push the operator/controller image to a registry OKE can pull.
 2. Build a Fn-compatible function runtime image and push it to same-region OCIR.
-3. Deploy the operator with Helm. The chart is the supported OKE path and defaults to OCI mode with Workload Identity.
-4. Apply a managed `FunctionApplication` with region, compartment, subnet IDs, optional NSG IDs, and application-level config.
-5. Apply a managed `Function` with `spec.applicationRef.name`, function display name, same-region OCIR image, memory, timeout, and function config.
-6. Submit a `FunctionJob`, create a `FunctionEventTrigger`, or emit a `FunctionEvent` after the `Function` is Ready.
+3. Apply chart CRDs with `kubectl apply -f charts/oci-functions-operator/crds/`.
+4. Deploy the operator with `helm upgrade --install`. The chart is the supported OKE path and defaults to OCI mode with Workload Identity.
+5. Apply a managed `FunctionApplication` with region, compartment, subnet IDs, optional NSG IDs, and application-level config.
+6. Apply a managed `Function` with `spec.applicationRef.name`, function display name, same-region OCIR image, memory, timeout, and function config.
+7. Submit a `FunctionJob`, create a `FunctionEventTrigger`, or emit a `FunctionEvent` after the `Function` is Ready.
 
 See [docs/helm-install.md](docs/helm-install.md) for installation and [docs/managed-function-demo.md](docs/managed-function-demo.md) for the full Function sequence.
 

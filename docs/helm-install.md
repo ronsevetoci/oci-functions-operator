@@ -37,10 +37,28 @@ Set `oci.region` when the OKE Workload Identity provider needs an explicit OCI r
 
 The Helm chart is the supported path for configuring `INVOKER_MODE=oci` and `OCI_AUTH_MODE=workload` on OKE.
 
-## Install
+## CRD Upgrade Rule
+
+Fresh Helm installs install chart CRDs from `charts/oci-functions-operator/crds/`. Existing Helm upgrades do not add or update CRDs from the chart `crds/` directory.
+
+Before every MVP demo or upgrade, apply the chart CRDs first:
 
 ```sh
-helm install oci-functions-operator charts/oci-functions-operator \
+kubectl apply -f charts/oci-functions-operator/crds/
+```
+
+Then run `helm upgrade --install`.
+
+## Install
+
+Apply CRDs before the Helm command:
+
+```sh
+kubectl apply -f charts/oci-functions-operator/crds/
+```
+
+```sh
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
@@ -60,19 +78,19 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
 
 ## Upgrade
 
-```sh
-helm upgrade oci-functions-operator charts/oci-functions-operator \
-  --namespace oci-functions-operator-system \
-  --set image.tag=v0.1.0
-```
-
-Helm fresh install installs chart CRDs, but Helm upgrade does not upgrade CRDs from the `crds/` directory. Before upgrading an existing release after API schema changes, apply CRDs deliberately:
+Apply CRDs before the Helm command:
 
 ```sh
 kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
-Then run the Helm upgrade.
+```sh
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --set image.tag=v0.1.0
+```
+
+This explicit `kubectl apply` is required for API additions such as `FunctionApplication`; Helm upgrade will not install that CRD for an existing release by itself.
 
 ## Uninstall
 
@@ -180,10 +198,11 @@ Development helpers:
 
 ```sh
 make helm-chart
+make helm-crds-check
 make helm-template
 ```
 
-`make helm-chart` refreshes chart CRDs from `config/crd/bases`.
+`make helm-chart` refreshes chart CRDs from `config/crd/bases`. `make helm-crds-check` fails if any generated CRD is missing from the chart or if a chart CRD is stale.
 
 Check installed permissions after deployment:
 
@@ -237,7 +256,7 @@ Missing CRDs:
 Stale CRDs after API changes:
 
 - Helm does not upgrade `crds/` entries during normal upgrades.
-- Apply the chart CRDs with `kubectl apply -f charts/oci-functions-operator/crds/`, then run `helm upgrade`.
+- Apply the chart CRDs with `kubectl apply -f charts/oci-functions-operator/crds/`, then run `helm upgrade --install`.
 
 Missing RBAC:
 
