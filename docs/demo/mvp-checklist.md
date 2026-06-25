@@ -15,7 +15,7 @@ Secondary checklist. Use [MVP demo flow](mvp-demo-flow.md) as the primary guide.
 - [ ] `kubectl config current-context` points at the demo OKE cluster.
 - [ ] `kubectl apply -f charts/oci-functions-operator/crds/` succeeds.
 - [ ] Operator Deployment rolls out in `oci-functions-operator-system`.
-- [ ] CRDs exist for `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
+- [ ] CRDs exist for `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 
 ## OCI
 
@@ -29,6 +29,7 @@ Secondary checklist. Use [MVP demo flow](mvp-demo-flow.md) as the primary guide.
 
 ## Expected Demo States
 
+- [ ] `managed-hello-app` reaches `Ready=True`.
 - [ ] `managed-hello` reaches `Ready=True`.
 - [ ] `managed-hello-job` reaches `Succeeded`.
 - [ ] `object-created-trigger` reaches `Ready` with an OCI Events Rule OCID.

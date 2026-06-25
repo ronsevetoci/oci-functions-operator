@@ -1,6 +1,6 @@
 # Managed Function Demo
 
-This is the primary OKE demo. It uses `mode: Managed`, so the operator creates or updates the OCI Functions application/function and discovers the invoke endpoint into `Function.status.invokeEndpoint`.
+This is the primary OKE demo. It uses a `FunctionApplication` to model the OCI Functions Application and a `Function` to model the OCI Function inside it. The operator creates or updates both OCI resources and discovers the invoke endpoint into `Function.status.invokeEndpoint`.
 
 OKE deployments should install the manager with Helm. The chart defaults to OCI mode with Workload Identity.
 
@@ -109,9 +109,34 @@ Helm fresh install installs CRDs, but Helm upgrade does not upgrade CRDs from th
 kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
-## 4. Apply A Managed Function
+## 4. Apply A Managed FunctionApplication And Function
 
-Create a managed `Function` in Jeddah:
+Create a managed `FunctionApplication` in Jeddah:
+
+```yaml
+apiVersion: functions.oci.oracle.com/v1alpha1
+kind: FunctionApplication
+metadata:
+  name: managed-hello-app
+  namespace: default
+spec:
+  mode: Managed
+  deletionPolicy: Retain
+  region: me-jeddah-1
+  compartmentId: <COMPARTMENT_OCID>
+  displayName: oke-functions-operator-demo
+  subnetIds:
+  - <SUBNET_OCID>
+  # Optional. Omit nsgIds to leave existing application NSGs unmanaged.
+  # Use nsgIds: [] to explicitly clear NSGs.
+  # Any attached NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
+  # nsgIds:
+  # - <NSG_OCID>
+  config:
+    APP_GREETING: "hello from application config"
+```
+
+Create a managed `Function` that references that application:
 
 ```yaml
 apiVersion: functions.oci.oracle.com/v1alpha1
@@ -122,17 +147,9 @@ metadata:
 spec:
   mode: Managed
   deletionPolicy: Retain
+  applicationRef:
+    name: managed-hello-app
   config:
-    region: me-jeddah-1
-    compartmentId: <COMPARTMENT_OCID>
-    applicationName: oke-functions-operator-demo
-    subnetIds:
-    - <SUBNET_OCID>
-    # Optional. Omit nsgIds to leave existing application NSGs unmanaged.
-    # Use nsgIds: [] to explicitly clear NSGs.
-    # Any attached NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
-    # nsgIds:
-    # - <NSG_OCID>
     displayName: managed-hello
     image: jed.ocir.io/<TENANCY_NAMESPACE>/hello-function:fn-v1
     memoryInMBs: 256
@@ -141,16 +158,19 @@ spec:
       GREETING: "hello from oke functions operator"
 ```
 
-Or edit and apply the sample:
+Or edit and apply the samples:
 
 ```sh
-kubectl apply -f config/samples/functions_v1alpha1_function_managed.yaml
+kubectl apply -f config/samples/functions_v1alpha1_functionapplication_managed_demo.yaml
+kubectl wait --for=condition=Ready functionapplication/managed-hello-app --timeout=10m
+kubectl apply -f config/samples/functions_v1alpha1_function_managed_with_applicationref.yaml
 kubectl get functions -w
 ```
 
 In another terminal:
 
 ```sh
+kubectl describe functionapplication managed-hello-app
 kubectl describe function managed-hello
 kubectl get events --field-selector involvedObject.kind=Function,involvedObject.name=managed-hello --sort-by=.lastTimestamp
 ```
@@ -162,6 +182,8 @@ Expected success indicators:
 - `status.functionId` is populated.
 - `status.invokeEndpoint` is populated.
 - `status.phase=Ready`.
+
+Legacy managed `Function` manifests that keep `region`, `compartmentId`, `applicationName`, `subnetIds`, and `nsgIds` under `spec.config` are still supported for compatibility. Prefer `FunctionApplication` for new demos because OCI Functions Applications are real shared resources.
 
 ## 5. Submit A FunctionJob
 
@@ -210,7 +232,7 @@ Expected success indicators:
 
 ## 6. Managed Function Cleanup
 
-`Function.spec.deletionPolicy` defaults to `Retain`, so deleting the Kubernetes `Function` leaves the OCI Function and OCI Functions application in place:
+`Function.spec.deletionPolicy` defaults to `Retain`, so deleting the Kubernetes `Function` leaves the OCI Function in place:
 
 ```sh
 kubectl delete function managed-hello
@@ -223,7 +245,15 @@ kubectl patch function managed-hello --type=merge -p '{"spec":{"deletionPolicy":
 kubectl delete function managed-hello
 ```
 
-The controller removes its finalizer only after the OCI Function is deleted or is already gone. The OCI Functions application is retained in this MVP; remove it manually if it should not remain.
+The controller removes its finalizer only after the OCI Function is deleted or is already gone.
+
+`FunctionApplication.spec.deletionPolicy` separately controls OCI Application cleanup. The default is also `Retain`:
+
+```sh
+kubectl delete functionapplication managed-hello-app
+```
+
+Set `deletionPolicy: Delete` only when the operator should delete the OCI Application. The controller deletes a managed application only if no functions remain in it; otherwise it keeps the finalizer and reports a clear blocked status/event. Existing-mode applications are never deleted.
 
 ## Troubleshooting
 
@@ -267,7 +297,8 @@ Checks:
 
 - Replace `<SUBNET_OCID>` with a subnet in `me-jeddah-1`.
 - Confirm OCI Functions is allowed to use the subnet.
-- If `spec.config.nsgIds` is set, confirm each NSG OCID is valid and can be attached to the Functions application.
+- If using `FunctionApplication`, confirm `kubectl describe functionapplication <name>` shows the application status and any OCI application reconcile error.
+- If `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds` is set, confirm each NSG OCID is valid and can be attached to the Functions application.
 - Confirm IAM policy allows network use if the subnet or NSG is in a different compartment.
 
 ### Image Pull Or Access Failure
@@ -287,7 +318,7 @@ Checks:
 - For private OCIR repositories, add repository read permission for the Functions application principal as required by your tenancy policy model.
 - Public OCIR repository visibility can avoid normal repo-read IAM for public pulls, but it does not solve network egress.
 - Confirm the Functions application subnet has a route to Oracle Services Network/OCIR, such as a Service Gateway route.
-- If `spec.config.nsgIds` is set, confirm each attached NSG allows egress TCP 443 to Oracle Services Network/OCIR.
+- If `FunctionApplication.spec.nsgIds` or legacy `Function.spec.config.nsgIds` is set, confirm each attached NSG allows egress TCP 443 to Oracle Services Network/OCIR.
 
 ### Stale CRDs
 

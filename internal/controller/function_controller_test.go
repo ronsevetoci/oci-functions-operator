@@ -248,6 +248,197 @@ func TestFunctionReconcilerManagedModeMarksReady(t *testing.T) {
 	}
 }
 
+func TestFunctionReconcilerWithApplicationRefWaitsForApplicationReady(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunctionWithApplicationRef("hello", "default", "demo-app")
+	application := managedFunctionApplication("demo-app", "default")
+	application.Status.Phase = functionsv1alpha1.FunctionApplicationPhasePending
+	application.Status.Message = "OCI Functions application is creating."
+	manager := &fakeLifecycleManager{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionApplication{}).
+		WithObjects(function, application).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("requeueAfter = 0, want waiting requeue")
+	}
+	if manager.calls != 0 || manager.ensureInApplicationCalls != 0 {
+		t.Fatalf("manager calls = legacy %d appRef %d, want none while app not ready", manager.calls, manager.ensureInApplicationCalls)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhasePending {
+		t.Fatalf("phase = %q, want Pending", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "FunctionApplication") {
+		t.Fatalf("message = %q, want FunctionApplication wait message", updated.Status.Message)
+	}
+}
+
+func TestFunctionReconcilerWithApplicationRefUsesApplicationStatusID(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunctionWithApplicationRef("hello", "default", "demo-app")
+	application := readyFunctionApplication("demo-app", "default")
+	manager := &fakeLifecycleManager{
+		state: lifecycle.FunctionState{
+			ApplicationID:  application.Status.ApplicationID,
+			FunctionID:     "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid",
+			InvokeEndpoint: "https://functions.me-jeddah-1.oci.oraclecloud.com",
+			Ready:          true,
+			Message:        "Managed OCI Function is ready.",
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionApplication{}).
+		WithObjects(function, application).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if manager.ensureInApplicationCalls != 1 {
+		t.Fatalf("ensureInApplicationCalls = %d, want 1", manager.ensureInApplicationCalls)
+	}
+	if manager.desiredInApplication.ApplicationID != application.Status.ApplicationID {
+		t.Fatalf("desired application ID = %q, want %q", manager.desiredInApplication.ApplicationID, application.Status.ApplicationID)
+	}
+	if manager.desiredInApplication.Region != application.Status.Region {
+		t.Fatalf("desired region = %q, want %q", manager.desiredInApplication.Region, application.Status.Region)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhaseReady {
+		t.Fatalf("phase = %q, want Ready", updated.Status.Phase)
+	}
+	if updated.Status.ApplicationID != application.Status.ApplicationID {
+		t.Fatalf("status application ID = %q, want %q", updated.Status.ApplicationID, application.Status.ApplicationID)
+	}
+}
+
+func TestFunctionReconcilerExistingFunctionWithApplicationRefUsesApplicationStatusID(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	application := readyFunctionApplication("demo-app", "default")
+	function := &functionsv1alpha1.Function{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: "default"},
+		Spec: functionsv1alpha1.FunctionSpec{
+			Mode:           functionsv1alpha1.FunctionModeExisting,
+			FunctionID:     "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid",
+			InvokeEndpoint: "https://functions.me-jeddah-1.oci.oraclecloud.com",
+			ApplicationRef: &functionsv1alpha1.FunctionApplicationReference{
+				Name: application.Name,
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionApplication{}).
+		WithObjects(application, function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhaseReady {
+		t.Fatalf("phase = %q, want Ready", updated.Status.Phase)
+	}
+	if updated.Status.ApplicationID != application.Status.ApplicationID {
+		t.Fatalf("application ID = %q, want %q", updated.Status.ApplicationID, application.Status.ApplicationID)
+	}
+}
+
+func TestFunctionReconcilerApplicationRefRejectsLegacyApplicationFields(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	application := readyFunctionApplication("demo-app", "default")
+	function := managedFunctionWithApplicationRef("hello", "default", application.Name)
+	function.Spec.Config.Region = "me-jeddah-1"
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionApplication{}).
+		WithObjects(application, function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: &fakeLifecycleManager{}}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "spec.applicationRef cannot be combined") {
+		t.Fatalf("message = %q, want applicationRef conflict", updated.Status.Message)
+	}
+}
+
+func TestFunctionReconcilerLegacyManagedFunctionStillWorks(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunction("hello", "default")
+	manager := &fakeLifecycleManager{
+		state: lifecycle.FunctionState{
+			ApplicationID:  "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
+			FunctionID:     "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid",
+			InvokeEndpoint: "https://functions.me-jeddah-1.oci.oraclecloud.com",
+			Ready:          true,
+			Message:        "Managed OCI Function is ready.",
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}).
+		WithObjects(function).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if manager.calls != 1 {
+		t.Fatalf("legacy ensure calls = %d, want 1", manager.calls)
+	}
+	if manager.ensureInApplicationCalls != 0 {
+		t.Fatalf("ensureInApplicationCalls = %d, want 0 for legacy Function", manager.ensureInApplicationCalls)
+	}
+}
+
 func TestFunctionReconcilerManagedModeRecordsLifecycleEvents(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
@@ -372,6 +563,7 @@ func TestFunctionReconcilerManagedDeleteDeletesOCIAndRemovesFinalizer(t *testing
 	function.Spec.DeletionPolicy = functionsv1alpha1.FunctionDeletionPolicyDelete
 	function.Finalizers = []string{functionFinalizer}
 	function.Status.FunctionID = "ocid1.fnfunc.oc1.me-jeddah-1.exampleuniqueid"
+	function.Status.ApplicationID = "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid"
 	manager := &fakeLifecycleManager{}
 
 	client := fake.NewClientBuilder().
@@ -394,6 +586,9 @@ func TestFunctionReconcilerManagedDeleteDeletesOCIAndRemovesFinalizer(t *testing
 	}
 	if manager.deleteTarget.FunctionID != function.Status.FunctionID {
 		t.Fatalf("delete target function ID = %q, want %q", manager.deleteTarget.FunctionID, function.Status.FunctionID)
+	}
+	if manager.deleteTarget.ApplicationID != function.Status.ApplicationID {
+		t.Fatalf("delete target application ID = %q, want %q", manager.deleteTarget.ApplicationID, function.Status.ApplicationID)
 	}
 	var updated functionsv1alpha1.Function
 	err = client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated)
@@ -554,20 +749,88 @@ func managedFunction(name, namespace string) *functionsv1alpha1.Function {
 	}
 }
 
+func managedFunctionWithApplicationRef(name, namespace, applicationName string) *functionsv1alpha1.Function {
+	return &functionsv1alpha1.Function{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: functionsv1alpha1.FunctionSpec{
+			Mode: functionsv1alpha1.FunctionModeManaged,
+			ApplicationRef: &functionsv1alpha1.FunctionApplicationReference{
+				Name: applicationName,
+			},
+			Config: &functionsv1alpha1.FunctionConfig{
+				DisplayName:      "hello",
+				Image:            "me-jeddah-1.ocir.io/example/functions/hello:latest",
+				MemoryInMBs:      256,
+				TimeoutInSeconds: 60,
+				Config:           map[string]string{"GREETING": "hello"},
+			},
+		},
+	}
+}
+
+func managedFunctionApplication(name, namespace string) *functionsv1alpha1.FunctionApplication {
+	return &functionsv1alpha1.FunctionApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: functionsv1alpha1.FunctionApplicationSpec{
+			Mode:          functionsv1alpha1.FunctionApplicationModeManaged,
+			Region:        "me-jeddah-1",
+			CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+			DisplayName:   "demo-app",
+			SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			NSGIDs:        []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"},
+		},
+	}
+}
+
+func readyFunctionApplication(name, namespace string) *functionsv1alpha1.FunctionApplication {
+	application := managedFunctionApplication(name, namespace)
+	application.Status = functionsv1alpha1.FunctionApplicationStatus{
+		Phase:         functionsv1alpha1.FunctionApplicationPhaseReady,
+		ApplicationID: "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
+		DisplayName:   "demo-app",
+		Region:        "me-jeddah-1",
+	}
+	meta.SetStatusCondition(&application.Status.Conditions, metav1.Condition{
+		Type:               functionsv1alpha1.FunctionApplicationConditionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "FunctionApplicationReady",
+		Message:            "OCI Functions application is ready.",
+		ObservedGeneration: application.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+	return application
+}
+
 type fakeLifecycleManager struct {
-	state        lifecycle.FunctionState
-	err          error
-	desired      lifecycle.DesiredFunction
-	calls        int
-	deleteState  lifecycle.FunctionDeletionState
-	deleteErr    error
-	deleteTarget lifecycle.ManagedFunctionDeleteTarget
-	deleteCalls  int
+	state                    lifecycle.FunctionState
+	err                      error
+	desired                  lifecycle.DesiredFunction
+	desiredInApplication     lifecycle.DesiredFunctionInApplication
+	calls                    int
+	ensureInApplicationCalls int
+	deleteState              lifecycle.FunctionDeletionState
+	deleteErr                error
+	deleteTarget             lifecycle.ManagedFunctionDeleteTarget
+	deleteCalls              int
+	applicationState         lifecycle.ApplicationState
+	applicationErr           error
+	desiredApplication       lifecycle.DesiredApplication
+	ensureApplicationCalls   int
+	deleteApplicationState   lifecycle.ApplicationDeletionState
+	deleteApplicationErr     error
+	deleteApplicationTarget  lifecycle.ApplicationDeleteTarget
+	deleteApplicationCalls   int
 }
 
 func (f *fakeLifecycleManager) EnsureFunction(_ context.Context, desired lifecycle.DesiredFunction) (lifecycle.FunctionState, error) {
 	f.calls++
 	f.desired = desired
+	return f.state, f.err
+}
+
+func (f *fakeLifecycleManager) EnsureFunctionInApplication(_ context.Context, desired lifecycle.DesiredFunctionInApplication) (lifecycle.FunctionState, error) {
+	f.ensureInApplicationCalls++
+	f.desiredInApplication = desired
 	return f.state, f.err
 }
 
@@ -582,4 +845,16 @@ func (f *fakeLifecycleManager) DeleteManagedFunction(_ context.Context, target l
 		}
 	}
 	return f.deleteState, f.deleteErr
+}
+
+func (f *fakeLifecycleManager) EnsureApplication(_ context.Context, desired lifecycle.DesiredApplication) (lifecycle.ApplicationState, error) {
+	f.ensureApplicationCalls++
+	f.desiredApplication = desired
+	return f.applicationState, f.applicationErr
+}
+
+func (f *fakeLifecycleManager) DeleteApplication(_ context.Context, target lifecycle.ApplicationDeleteTarget) (lifecycle.ApplicationDeletionState, error) {
+	f.deleteApplicationCalls++
+	f.deleteApplicationTarget = target
+	return f.deleteApplicationState, f.deleteApplicationErr
 }

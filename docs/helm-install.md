@@ -1,6 +1,6 @@
 # Helm Install
 
-Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place. The packaged CRDs are `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
+Helm is the recommended OKE deployment path for the OCI Functions Operator. The chart packages CRDs, RBAC, service account, deployment settings, metrics service, image values, and OCI Workload Identity environment defaults in one place. The packaged CRDs are `FunctionApplication`, `Function`, `FunctionJob`, `FunctionEventTrigger`, and `FunctionEvent`.
 
 Use Helm for supported OKE installs and upgrades. Kustomize manifests under `config/` are retained for operator development only. Do not mix Helm and Kustomize resources for the same cluster install.
 
@@ -37,10 +37,28 @@ Set `oci.region` when the OKE Workload Identity provider needs an explicit OCI r
 
 The Helm chart is the supported path for configuring `INVOKER_MODE=oci` and `OCI_AUTH_MODE=workload` on OKE.
 
-## Install
+## CRD Upgrade Rule
+
+Fresh Helm installs install chart CRDs from `charts/oci-functions-operator/crds/`. Existing Helm upgrades do not add or update CRDs from the chart `crds/` directory.
+
+Before every MVP demo or upgrade, apply the chart CRDs first:
 
 ```sh
-helm install oci-functions-operator charts/oci-functions-operator \
+kubectl apply -f charts/oci-functions-operator/crds/
+```
+
+Then run `helm upgrade --install`.
+
+## Install
+
+Apply CRDs before the Helm command:
+
+```sh
+kubectl apply -f charts/oci-functions-operator/crds/
+```
+
+```sh
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
@@ -60,19 +78,19 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
 
 ## Upgrade
 
-```sh
-helm upgrade oci-functions-operator charts/oci-functions-operator \
-  --namespace oci-functions-operator-system \
-  --set image.tag=v0.1.0
-```
-
-Helm fresh install installs chart CRDs, but Helm upgrade does not upgrade CRDs from the `crds/` directory. Before upgrading an existing release after API schema changes, apply CRDs deliberately:
+Apply CRDs before the Helm command:
 
 ```sh
 kubectl apply -f charts/oci-functions-operator/crds/
 ```
 
-Then run the Helm upgrade.
+```sh
+helm upgrade --install oci-functions-operator charts/oci-functions-operator \
+  --namespace oci-functions-operator-system \
+  --set image.tag=v0.1.0
+```
+
+This explicit `kubectl apply` is required for API additions such as `FunctionApplication`; Helm upgrade will not install that CRD for an existing release by itself.
 
 ## Uninstall
 
@@ -83,7 +101,7 @@ helm uninstall oci-functions-operator \
 
 Helm uninstall removes namespaced chart resources, ClusterRoles, and bindings, but CRDs installed from `crds/` are intentionally left behind by Helm. Remove CRDs manually only after deleting custom resources you care about.
 
-Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so deleting them leaves OCI resources untouched. Set `deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. The OCI Functions application is retained in this MVP. Existing-mode `Function` resources never delete OCI resources.
+Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so deleting them leaves OCI resources untouched. Set `Function.spec.deletionPolicy: Delete` only when Kubernetes deletion should also delete the managed OCI Function. `FunctionApplication.spec.deletionPolicy` separately controls OCI Application cleanup; Delete is honored only for managed applications and only when no functions remain. Existing-mode resources never delete OCI resources.
 
 ## Image Values
 
@@ -180,15 +198,25 @@ Development helpers:
 
 ```sh
 make helm-chart
+make helm-crds-check
 make helm-template
 ```
 
-`make helm-chart` refreshes chart CRDs from `config/crd/bases`.
+`make helm-chart` refreshes chart CRDs from `config/crd/bases`. `make helm-crds-check` fails if any generated CRD is missing from the chart or if a chart CRD is stale.
 
 Check installed permissions after deployment:
 
 ```sh
 kubectl auth can-i get functions.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i get functionapplications.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i update functionapplications.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i update functionapplications.functions.oci.oracle.com/status \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 
 kubectl auth can-i update functions.functions.oci.oracle.com \
@@ -221,18 +249,18 @@ ImagePullBackOff:
 Missing CRDs:
 
 - Confirm Helm installed the CRDs:
-  `kubectl get crd functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com`
+  `kubectl get crd functionapplications.functions.oci.oracle.com functions.functions.oci.oracle.com functionjobs.functions.oci.oracle.com functioneventtriggers.functions.oci.oracle.com functionevents.functions.oci.oracle.com`
 - If CRDs were skipped or removed, apply:
   `kubectl apply -f charts/oci-functions-operator/crds/`
 
 Stale CRDs after API changes:
 
 - Helm does not upgrade `crds/` entries during normal upgrades.
-- Apply the chart CRDs with `kubectl apply -f charts/oci-functions-operator/crds/`, then run `helm upgrade`.
+- Apply the chart CRDs with `kubectl apply -f charts/oci-functions-operator/crds/`, then run `helm upgrade --install`.
 
 Missing RBAC:
 
-- Confirm `helm template` contains the ClusterRole rules for `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, their `status` and needed `finalizers`, and core `events`.
+- Confirm `helm template` contains the ClusterRole rules for `functionapplications`, `functions`, `functionjobs`, `functioneventtriggers`, `functionevents`, their `status` and needed `finalizers`, and core `events`.
 - Re-run the Helm upgrade if the ClusterRole drifted.
 - Do not repair a Helm-managed install with `kubectl apply -k config/rbac`; keep ownership with Helm.
 

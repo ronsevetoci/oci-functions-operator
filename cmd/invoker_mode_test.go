@@ -224,8 +224,20 @@ func (fakeLifecycleManager) EnsureFunction(context.Context, lifecycle.DesiredFun
 	return lifecycle.FunctionState{}, nil
 }
 
+func (fakeLifecycleManager) EnsureFunctionInApplication(context.Context, lifecycle.DesiredFunctionInApplication) (lifecycle.FunctionState, error) {
+	return lifecycle.FunctionState{}, nil
+}
+
 func (fakeLifecycleManager) DeleteManagedFunction(context.Context, lifecycle.ManagedFunctionDeleteTarget) (lifecycle.FunctionDeletionState, error) {
 	return lifecycle.FunctionDeletionState{}, nil
+}
+
+func (fakeLifecycleManager) EnsureApplication(context.Context, lifecycle.DesiredApplication) (lifecycle.ApplicationState, error) {
+	return lifecycle.ApplicationState{}, nil
+}
+
+func (fakeLifecycleManager) DeleteApplication(context.Context, lifecycle.ApplicationDeleteTarget) (lifecycle.ApplicationDeletionState, error) {
+	return lifecycle.ApplicationDeletionState{}, nil
 }
 
 type fakeEventTriggerManager struct{}
