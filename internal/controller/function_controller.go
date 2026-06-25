@@ -38,7 +38,7 @@ type FunctionReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=functions.oci.oracle.com,resources=functions/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch

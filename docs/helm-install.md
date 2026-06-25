@@ -191,6 +191,12 @@ Check installed permissions after deployment:
 kubectl auth can-i get functions.functions.oci.oracle.com \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 
+kubectl auth can-i update functions.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
+kubectl auth can-i patch functions.functions.oci.oracle.com \
+  --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
+
 kubectl auth can-i update functions.functions.oci.oracle.com/status \
   --as=system:serviceaccount:oci-functions-operator-system:oci-functions-operator-controller-manager
 
