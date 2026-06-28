@@ -248,6 +248,20 @@ func (r *FunctionReconciler) resolveFunctionApplicationRef(ctx context.Context, 
 		}
 		return nil, false, err
 	}
+	if !application.DeletionTimestamp.IsZero() {
+		desiredObject.Status.ApplicationID = application.Status.ApplicationID
+		desiredObject.Status.Phase = functionsv1alpha1.FunctionPhasePending
+		desiredObject.Status.Message = fmt.Sprintf("Waiting for FunctionApplication %q deletion to finish.", application.Name)
+		desiredObject.SetCondition(metav1.Condition{
+			Type:               functionsv1alpha1.FunctionConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "FunctionApplicationDeleting",
+			Message:            desiredObject.Status.Message,
+			ObservedGeneration: function.Generation,
+			LastTransitionTime: now,
+		})
+		return nil, true, nil
+	}
 	if !application.IsReady() || strings.TrimSpace(application.Status.ApplicationID) == "" {
 		desiredObject.Status.ApplicationID = application.Status.ApplicationID
 		desiredObject.Status.Phase = functionsv1alpha1.FunctionPhasePending

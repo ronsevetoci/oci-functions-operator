@@ -287,6 +287,48 @@ func TestFunctionReconcilerWithApplicationRefWaitsForApplicationReady(t *testing
 	}
 }
 
+func TestFunctionReconcilerWithApplicationRefWaitsWhenApplicationDeleting(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	function := managedFunctionWithApplicationRef("hello", "default", "demo-app")
+	application := readyFunctionApplication("demo-app", "default")
+	application.Finalizers = []string{functionApplicationFinalizer}
+	manager := &fakeLifecycleManager{}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.Function{}, &functionsv1alpha1.FunctionApplication{}).
+		WithObjects(function, application).
+		Build()
+	reconciler := &FunctionReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	if err := client.Delete(ctx, application); err != nil {
+		t.Fatalf("delete FunctionApplication: %v", err)
+	}
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("requeueAfter = 0, want waiting requeue")
+	}
+	if manager.calls != 0 || manager.ensureInApplicationCalls != 0 {
+		t.Fatalf("manager calls = legacy %d appRef %d, want none while app is deleting", manager.calls, manager.ensureInApplicationCalls)
+	}
+
+	var updated functionsv1alpha1.Function
+	if err := client.Get(ctx, types.NamespacedName{Name: "hello", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated Function: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionPhasePending {
+		t.Fatalf("phase = %q, want Pending", updated.Status.Phase)
+	}
+	condition := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionConditionReady)
+	if condition == nil || condition.Reason != "FunctionApplicationDeleting" {
+		t.Fatalf("Ready condition = %#v, want FunctionApplicationDeleting", condition)
+	}
+}
+
 func TestFunctionReconcilerWithApplicationRefUsesApplicationStatusID(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
