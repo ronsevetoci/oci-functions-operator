@@ -92,6 +92,7 @@ func (r *FunctionApplicationReconciler) Reconcile(ctx context.Context, req ctrl.
 			desiredStatus.Phase = functionsv1alpha1.FunctionApplicationPhaseError
 			desiredStatus.Message = normalizeFunctionLifecycleError("Reconcile FunctionApplication", err)
 			setFunctionApplicationConditions(&desiredStatus, application.Generation, now, metav1.ConditionFalse, "FunctionApplicationError", desiredStatus.Message)
+			result = ctrl.Result{RequeueAfter: functionApplicationRequeue}
 		} else if state.Ready {
 			desiredStatus.Phase = functionsv1alpha1.FunctionApplicationPhaseReady
 			if desiredStatus.Message == "" {

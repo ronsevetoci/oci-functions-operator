@@ -410,6 +410,70 @@ func TestEnsureApplicationAdoptsInactiveInvocationLog(t *testing.T) {
 	}
 }
 
+func TestEnsureApplicationWaitsForCreatingInvocationLog(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		application: ocifunctions.Application{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:      []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			Logging:        &ocifunctions.ApplicationLoggingConfig{LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatJson},
+		},
+		logs: []ocilogging.LogSummary{{
+			Id:             common.String("ocid1.log.oc1.me-jeddah-1.creating"),
+			LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+			DisplayName:    common.String("demo-app-invocation"),
+			LogType:        ocilogging.LogSummaryLogTypeService,
+			LifecycleState: ocilogging.LogLifecycleStateCreating,
+			IsEnabled:      common.Bool(true),
+			Configuration: &ocilogging.Configuration{
+				Source: ocilogging.OciService{
+					Service:  common.String(defaultInvocationLogService),
+					Resource: common.String(fakeApplicationID),
+					Category: common.String(defaultInvocationLogCategory),
+				},
+			},
+		}},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:          ApplicationModeManaged,
+		Region:        "me-jeddah-1",
+		CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:   "demo-app",
+		SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:        true,
+			LogGroupID:     "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LogDisplayName: "demo-app-invocation",
+			LineFormat:     "JSON",
+		}},
+		ManageApplicationLogging: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureApplication returned error: %v", err)
+	}
+	if state.Ready {
+		t.Fatalf("state.Ready = true, want pending while invocation log is creating")
+	}
+	if !strings.Contains(state.Message, "CREATING") || !strings.Contains(state.Message, "ocid1.log.oc1.me-jeddah-1.creating") {
+		t.Fatalf("state.Message = %q, want creating log guidance", state.Message)
+	}
+	if fakeClient.createdLogGroupID != "" {
+		t.Fatalf("createdLogGroupID = %q, want no create for existing creating source log", fakeClient.createdLogGroupID)
+	}
+	if fakeClient.updatedLogID != "" {
+		t.Fatalf("updatedLogID = %q, want no update while source log is creating", fakeClient.updatedLogID)
+	}
+}
+
 func TestEnsureApplicationReportsInvocationLogDisplayNameConflict(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := &fakeManagementClient{

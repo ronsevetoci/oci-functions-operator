@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -82,6 +83,45 @@ func TestFunctionApplicationReconcilerManagedMarksReady(t *testing.T) {
 	}
 	if condition := meta.FindStatusCondition(updated.Status.Conditions, functionsv1alpha1.FunctionApplicationConditionReady); condition == nil || condition.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %#v, want true", condition)
+	}
+}
+
+func TestFunctionApplicationReconcilerRequeuesLifecycleError(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	application := managedFunctionApplication("demo-app", "default")
+	manager := &fakeLifecycleManager{
+		applicationState: lifecycle.ApplicationState{
+			ApplicationID: "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
+			DisplayName:   "demo-app",
+			Region:        "me-jeddah-1",
+		},
+		applicationErr: errors.New("OCI Logging service log is CREATING"),
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&functionsv1alpha1.FunctionApplication{}).
+		WithObjects(application).
+		Build()
+	reconciler := &FunctionApplicationReconciler{Client: client, Scheme: scheme, Manager: manager}
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "demo-app", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if result.RequeueAfter != functionApplicationRequeue {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, functionApplicationRequeue)
+	}
+	var updated functionsv1alpha1.FunctionApplication
+	if err := client.Get(ctx, types.NamespacedName{Name: "demo-app", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated FunctionApplication: %v", err)
+	}
+	if updated.Status.Phase != functionsv1alpha1.FunctionApplicationPhaseError {
+		t.Fatalf("phase = %q, want Error", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "OCI Logging service log is CREATING") {
+		t.Fatalf("message = %q, want lifecycle error", updated.Status.Message)
 	}
 }
 

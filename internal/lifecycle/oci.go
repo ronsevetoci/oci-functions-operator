@@ -245,12 +245,17 @@ func (o *OCI) EnsureApplication(ctx context.Context, desired DesiredApplication)
 		logEvents, err := o.ensureApplicationInvocationLog(ctx, desired, stringValue(application.Id), region)
 		events = append(events, logEvents...)
 		if err != nil {
-			return ApplicationState{
+			state := ApplicationState{
 				ApplicationID: stringValue(application.Id),
 				DisplayName:   stringValue(application.DisplayName),
 				Region:        region,
 				Events:        events,
-			}, err
+			}
+			if message, ok := pendingApplicationLogMessage(err); ok {
+				state.Message = message
+				return state, nil
+			}
+			return state, err
 		}
 	}
 
@@ -728,7 +733,11 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 
 	log := matching[0]
 	if !manageableInvocationLogState(log.LifecycleState) {
-		return nil, fmt.Errorf("OCI Logging service log %s for Functions application %s in log group %s is %s; wait for the log lifecycle to settle before reconciling invocation logs", stringValue(log.Id), applicationID, logGroupID, log.LifecycleState)
+		message := fmt.Sprintf("OCI Logging service log %s for Functions application %s in log group %s is %s; wait for the log lifecycle to settle before reconciling invocation logs", stringValue(log.Id), applicationID, logGroupID, log.LifecycleState)
+		if pendingInvocationLogState(log.LifecycleState) {
+			return nil, pendingApplicationLogError{message: message}
+		}
+		return nil, fmt.Errorf("%s", message)
 	}
 	needsUpdate := false
 	updateDetails := ocilogging.UpdateLogDetails{}
@@ -1011,6 +1020,12 @@ func manageableInvocationLogState(state ocilogging.LogLifecycleStateEnum) bool {
 		state == ocilogging.LogLifecycleStateInactive
 }
 
+func pendingInvocationLogState(state ocilogging.LogLifecycleStateEnum) bool {
+	return state == ocilogging.LogLifecycleStateCreating ||
+		state == ocilogging.LogLifecycleStateUpdating ||
+		state == ocilogging.LogLifecycleStateDeleting
+}
+
 func invocationLogSourceDescription(log ocilogging.LogSummary) string {
 	if log.Configuration == nil {
 		return "<unknown>"
@@ -1052,6 +1067,22 @@ func isOCIServiceNotFound(err error) bool {
 func isOCIServiceConflict(err error) bool {
 	serviceErr, ok := common.IsServiceError(err)
 	return ok && serviceErr.GetHTTPStatusCode() == 409
+}
+
+type pendingApplicationLogError struct {
+	message string
+}
+
+func (e pendingApplicationLogError) Error() string {
+	return e.message
+}
+
+func pendingApplicationLogMessage(err error) (string, bool) {
+	pendingErr, ok := err.(pendingApplicationLogError)
+	if !ok {
+		return "", false
+	}
+	return pendingErr.message, true
 }
 
 func hasEmptyString(values []string) bool {
