@@ -14,7 +14,7 @@ Kustomize manifests under `config/` are retained for Kubebuilder-generated resou
 ## Prerequisites
 
 - `kubectl` points at the target OKE cluster.
-- The operator image `ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0` is reachable by OKE.
+- The operator image `ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.7` is reachable by OKE.
 - OKE Workload Identity is enabled/available for the cluster and service account. Use an OKE cluster type/version that supports Workload Identity in your tenancy.
 - OCI IAM policy allows this Kubernetes workload to manage OCI Functions resources, manage OCI Events rules, and invoke functions.
 - For managed mode: a compartment OCID, subnet OCIDs, optional NSG OCIDs, and a same-region OCIR function image OCI Functions can pull.
@@ -26,7 +26,7 @@ Set the operator image tag you want OKE to run:
 
 ```sh
 export OPERATOR_IMAGE_REPOSITORY="ghcr.io/ronsevetoci/oci-functions-operator/controller"
-export OPERATOR_IMAGE_TAG="v0.1.0"
+export OPERATOR_IMAGE_TAG="v0.1.7"
 export OCI_REGION="me-jeddah-1"
 ```
 
@@ -376,7 +376,7 @@ helm upgrade oci-functions-operator charts/oci-functions-operator \
   --set image.tag="$OPERATOR_IMAGE_TAG"
 ```
 
-- If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `v0.1.0`.
+- If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `v0.1.7`.
 
 ### Invoke Endpoint Errors
 

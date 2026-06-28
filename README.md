@@ -5,7 +5,7 @@ Kubernetes-native APIs for managing and invoking OCI Functions from OKE.
 Current controller image:
 
 ```text
-ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
+ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.7
 ```
 
 ## What This Operator Provides

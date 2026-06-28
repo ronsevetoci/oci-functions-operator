@@ -13,7 +13,7 @@ charts/oci-functions-operator
 The current published image tag is:
 
 ```text
-ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
+ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.7
 ```
 
 ## Defaults
@@ -62,7 +62,7 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
-  --set image.tag=v0.1.0
+  --set image.tag=v0.1.7
 ```
 
 If needed, include the OKE region:
@@ -72,7 +72,7 @@ helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ronsevetoci/oci-functions-operator/controller \
-  --set image.tag=v0.1.0 \
+  --set image.tag=v0.1.7 \
   --set oci.region=me-jeddah-1
 ```
 
@@ -87,7 +87,7 @@ kubectl apply -f charts/oci-functions-operator/crds/
 ```sh
 helm upgrade --install oci-functions-operator charts/oci-functions-operator \
   --namespace oci-functions-operator-system \
-  --set image.tag=v0.1.0
+  --set image.tag=v0.1.7
 ```
 
 This explicit `kubectl apply` is required for API additions such as `FunctionApplication`; Helm upgrade will not install that CRD for an existing release by itself.
@@ -108,11 +108,11 @@ Managed `Function` custom resources default to `spec.deletionPolicy: Retain`, so
 ```yaml
 image:
   repository: ghcr.io/ronsevetoci/oci-functions-operator/controller
-  tag: v0.1.0
+  tag: v0.1.7
   pullPolicy: IfNotPresent
 ```
 
-If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `v0.1.0`.
+If you override `image.tag` to an empty string, the chart uses `Chart.appVersion`, currently `v0.1.7`.
 
 ## Service Account And Workload Identity
 
