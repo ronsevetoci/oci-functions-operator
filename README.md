@@ -23,19 +23,32 @@ The operator exposes five namespaced CRDs in `functions.oci.oracle.com/v1alpha1`
 ## Resource Flow
 
 ```mermaid
-flowchart TD
-    FA[FunctionApplication CR] --> OCIAPP[OCI Functions Application]
-    FN[Function CR] --> FA
-    FN --> OCIFN[OCI Function]
-    FJ[FunctionJob CR] --> FN
-    FE[FunctionEvent CR] --> FET[FunctionEventTrigger CR]
-    FET -->|functionevent.*| FN
-    FET -->|com.oraclecloud.*| RULE[OCI Events Rule]
-    OCI[OCI service event] --> RULE
-    RULE --> OCIFN
-    OCIFN --> INVOKE[Function invocation]
-    FJ --> INVOKE
+flowchart TB
+    APPCR[FunctionApplication CR]
+    APP[OCI Functions Application]
+    FNCR[Function CR]
+    FN[OCI Function]
+    INVOKE[Function Invocation]
+
+    APPCR --> APP
+    APP --> FNCR
+    FNCR --> FN
+    FN --> INVOKE
+
+    JOB[FunctionJob CR]
+    TRIGGER[FunctionEventTrigger CR]
+    EVENT[FunctionEvent CR]
+    OCIEVENT[OCI service event]
+    RULE[OCI Events Rule]
+
+    JOB --> INVOKE
+    EVENT --> TRIGGER
+    OCIEVENT --> RULE
+    RULE --> TRIGGER
+    TRIGGER --> INVOKE
 ```
+
+Read it top to bottom: a `FunctionApplication` is the application wrapper, a `Function` lives inside it, and every invocation path eventually invokes that function. `FunctionJob` is direct work submission. `FunctionEventTrigger` routes either OCI service events through an OCI Events Rule or in-cluster `FunctionEvent` objects.
 
 The important boundary is that the operator does not turn OCI Functions into Pods. It keeps OCI Functions as OCI resources and gives Kubernetes users a clear control plane for application setup, function setup, invocation, event routing, status, and events.
 
