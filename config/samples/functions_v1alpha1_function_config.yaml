@@ -8,7 +8,7 @@ spec:
   config:
     region: me-jeddah-1
     compartmentId: ocid1.compartment.oc1..exampleuniqueid
-    applicationName: oci-functions-operator-demo
+    applicationName: oci-functions-operator-sample
     subnetIds:
     - ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid
     # Optional: attach NSGs to the OCI Functions application.

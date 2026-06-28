@@ -10,7 +10,7 @@ The chart lives at:
 charts/oci-functions-operator
 ```
 
-The MVP handoff image tag is:
+The current published image tag is:
 
 ```text
 ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
@@ -41,7 +41,7 @@ The Helm chart is the supported path for configuring `INVOKER_MODE=oci` and `OCI
 
 Fresh Helm installs install chart CRDs from `charts/oci-functions-operator/crds/`. Existing Helm upgrades do not add or update CRDs from the chart `crds/` directory.
 
-Before every MVP demo or upgrade, apply the chart CRDs first:
+Before installing or upgrading after API changes, apply the chart CRDs first:
 
 ```sh
 kubectl apply -f charts/oci-functions-operator/crds/

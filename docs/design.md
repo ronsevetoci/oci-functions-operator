@@ -12,7 +12,7 @@ CRDs let users describe function invocation work with normal Kubernetes resource
 
 This is intentionally not modeled as Pods or Kubernetes Jobs. OCI Functions are external serverless resources, so the operator tracks invocation intent and observed outcomes instead of pretending each invocation is a pod lifecycle.
 
-## MVP Scope
+## Current Scope
 
 The operator currently exposes five namespaced resources in `functions.oci.oracle.com/v1alpha1`:
 
@@ -24,7 +24,7 @@ The operator currently exposes five namespaced resources in `functions.oci.oracl
 
 Implemented invoker modes:
 
-- `fake`: deterministic local success path for development and demos.
+- `fake`: deterministic local success path for development and tests.
 - `oci`: OCI Go SDK-backed lifecycle, invocation, and OCI Events rule management.
 
 ## Non-Goals
@@ -154,7 +154,7 @@ When one or more payloads exhaust retries:
 
 ## Fake Mode Vs OCI Mode
 
-`INVOKER_MODE=fake` is the default. It returns deterministic successful responses and is intended for local demos, controller development, and CI-friendly tests. It does not contact OCI.
+`INVOKER_MODE=fake` is the default. It returns deterministic successful responses and is intended for local controller development and CI-friendly tests. It does not contact OCI.
 
 `INVOKER_MODE=oci` constructs an OCI Go SDK Functions invoke client. It requires:
 
@@ -169,7 +169,7 @@ OCI mode records `Fn-Call-Id` when available, otherwise `opc-request-id`, and st
 
 - Managed lifecycle reconciles FunctionApplication create/adopt/update, application NSG/config updates, Function create/update, opt-in OCI Function deletion, and opt-in empty OCI Application deletion.
 - Existing mode requires the user to provide the invoke endpoint in `spec.invokeEndpoint`.
-- Inline payloads are intended for small demos and operational jobs, not large queues.
+- Inline payloads are intended for small operational jobs, not large queues.
 - Large jobs should eventually use Object Storage, Queue, or Streaming payload sources instead of embedding all payloads in the CR.
 - Retry behavior is local to reconciliation and status, not a durable external work queue.
 - This is not a generic Kubernetes Job compatibility layer.

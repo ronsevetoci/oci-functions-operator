@@ -11,7 +11,7 @@ spec:
   config:
     region: me-jeddah-1
     compartmentId: <COMPARTMENT_OCID>
-    applicationName: oke-functions-operator-demo
+    applicationName: oke-functions-operator-sample
     subnetIds:
     - <SUBNET_OCID>
     # Optional: attach NSGs to the OCI Functions application.

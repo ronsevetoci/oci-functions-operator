@@ -162,7 +162,7 @@ spec:
   deletionPolicy: Retain
   region: me-jeddah-1
   compartmentId: ${COMPARTMENT_OCID}
-  displayName: oci-functions-operator-demo
+  displayName: oci-functions-operator
   subnetIds:
   - ${SUBNET_OCID}
   # Optional: uncomment when the Functions application should use NSGs.
@@ -269,7 +269,7 @@ spec:
     name: ${FUNCTION_RESOURCE_NAME}
   payload:
     message: hello from OKE
-    requestId: oke-demo-001
+    requestId: oke-request-001
   parallelism: 1
   retryLimit: 1
 EOF
@@ -411,8 +411,8 @@ Checks:
 
 ## Local Config Auth
 
-`OCI_AUTH_MODE=config` is for local development runs, not the OKE deployment path. See [oci-mode-demo.md](oci-mode-demo.md) for the local `go run` workflow that uses `OCI_CONFIG_FILE` and `OCI_CONFIG_PROFILE`.
+`OCI_AUTH_MODE=config` is for local development runs, not the OKE deployment path. It uses `OCI_CONFIG_FILE` and `OCI_CONFIG_PROFILE` with `INVOKER_MODE=oci` when you intentionally run the manager from a workstation.
 
-## Current MVP Boundary
+## Current Boundary
 
 This deployment supports explicit `FunctionApplication` reconciliation, existing Function references, managed Function reconciliation, opt-in deletion of managed OCI Functions and empty managed OCI Applications, `FunctionJob` invocation, OCI Events rule triggers through `FunctionEventTrigger`, and Kubernetes-native `FunctionEvent` routing for `functionevent.*` event types. Image build/push workflows, schedules, Kubernetes watch triggers, workflows, and Function deployment packaging remain out of scope.

@@ -87,7 +87,7 @@ type FunctionSpec struct {
 
 	// DeletionPolicy controls what happens to OCI resources when this Kubernetes Function is deleted.
 	// Defaults to Retain for safety. Delete is honored only for Managed mode and deletes the managed OCI Function.
-	// The OCI Functions application is retained in this MVP.
+	// The OCI Functions application is controlled separately by FunctionApplication.
 	// +optional
 	// +kubebuilder:default=Retain
 	DeletionPolicy FunctionDeletionPolicy `json:"deletionPolicy,omitempty"`

@@ -8,7 +8,7 @@ spec:
   deletionPolicy: Retain
   region: me-jeddah-1
   compartmentId: <COMPARTMENT_OCID>
-  displayName: oke-functions-operator-demo
+  displayName: oke-functions-operator
   subnetIds:
   - <SUBNET_OCID>
   # Optional: attach NSGs to the OCI Functions application.
