@@ -336,6 +336,208 @@ func TestEnsureApplicationUpdatesMutableFields(t *testing.T) {
 	}
 }
 
+func TestEnsureApplicationAdoptsInactiveInvocationLog(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		application: ocifunctions.Application{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:      []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			Logging:        &ocifunctions.ApplicationLoggingConfig{LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatJson},
+		},
+		logs: []ocilogging.LogSummary{{
+			Id:             common.String("ocid1.log.oc1.me-jeddah-1.inactive"),
+			LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+			DisplayName:    common.String("old-functions-log"),
+			LogType:        ocilogging.LogSummaryLogTypeService,
+			LifecycleState: ocilogging.LogLifecycleStateInactive,
+			IsEnabled:      common.Bool(false),
+			Configuration: &ocilogging.Configuration{
+				Source: ocilogging.OciService{
+					Service:  common.String(defaultInvocationLogService),
+					Resource: common.String(fakeApplicationID),
+					Category: common.String(defaultInvocationLogCategory),
+				},
+			},
+		}},
+		createLogErr: fakeServiceError{status: 409, code: "Conflict", message: "logDisplayName already exists"},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	state, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:          ApplicationModeManaged,
+		Region:        "me-jeddah-1",
+		CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:   "demo-app",
+		SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:        true,
+			LogGroupID:     "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LogDisplayName: "demo-app-invocation",
+			LineFormat:     "JSON",
+		}},
+		ManageApplicationLogging: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureApplication returned error: %v", err)
+	}
+	if !state.Ready {
+		t.Fatalf("state.Ready = false, want true")
+	}
+	if len(fakeClient.listLogsRequests) != 1 {
+		t.Fatalf("ListLogs called %d times, want 1", len(fakeClient.listLogsRequests))
+	}
+	if fakeClient.listLogsRequests[0].LifecycleState != "" {
+		t.Fatalf("ListLogs lifecycle filter = %q, want all lifecycle states", fakeClient.listLogsRequests[0].LifecycleState)
+	}
+	if fakeClient.createdLogGroupID != "" {
+		t.Fatalf("createdLogGroupID = %q, want no create for existing inactive source log", fakeClient.createdLogGroupID)
+	}
+	if fakeClient.updatedLogID != "ocid1.log.oc1.me-jeddah-1.inactive" {
+		t.Fatalf("updatedLogID = %q, want existing inactive service log", fakeClient.updatedLogID)
+	}
+	if fakeClient.updatedLog.DisplayName == nil || *fakeClient.updatedLog.DisplayName != "demo-app-invocation" {
+		t.Fatalf("updated displayName = %#v, want demo-app-invocation", fakeClient.updatedLog.DisplayName)
+	}
+	if fakeClient.updatedLog.IsEnabled == nil || !*fakeClient.updatedLog.IsEnabled {
+		t.Fatalf("updated isEnabled = %#v, want true", fakeClient.updatedLog.IsEnabled)
+	}
+}
+
+func TestEnsureApplicationReportsInvocationLogDisplayNameConflict(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		application: ocifunctions.Application{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:      []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			Logging:        &ocifunctions.ApplicationLoggingConfig{LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatJson},
+		},
+		logs: []ocilogging.LogSummary{{
+			Id:             common.String("ocid1.log.oc1.me-jeddah-1.other"),
+			LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+			DisplayName:    common.String("demo-app-invocation"),
+			LogType:        ocilogging.LogSummaryLogTypeService,
+			LifecycleState: ocilogging.LogLifecycleStateActive,
+			IsEnabled:      common.Bool(true),
+			Configuration: &ocilogging.Configuration{
+				Source: ocilogging.OciService{
+					Service:  common.String(defaultInvocationLogService),
+					Resource: common.String("ocid1.fnapp.oc1.me-jeddah-1.other"),
+					Category: common.String(defaultInvocationLogCategory),
+				},
+			},
+		}},
+		createLogErr: fakeServiceError{status: 409, code: "Conflict", message: "logDisplayName already exists"},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	_, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:          ApplicationModeManaged,
+		Region:        "me-jeddah-1",
+		CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:   "demo-app",
+		SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:        true,
+			LogGroupID:     "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LogDisplayName: "demo-app-invocation",
+			LineFormat:     "JSON",
+		}},
+		ManageApplicationLogging: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "displayName") || !strings.Contains(err.Error(), "ocid1.log.oc1.me-jeddah-1.other") {
+		t.Fatalf("EnsureApplication error = %v, want displayName conflict with existing log OCID", err)
+	}
+	if fakeClient.createdLogGroupID != "" {
+		t.Fatalf("createdLogGroupID = %q, want no create when displayName is already owned", fakeClient.createdLogGroupID)
+	}
+	if fakeClient.updatedLogID != "" {
+		t.Fatalf("updatedLogID = %q, want no update for different-source displayName conflict", fakeClient.updatedLogID)
+	}
+}
+
+func TestEnsureApplicationReportsInvocationLogRenameConflict(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{
+		applications: []ocifunctions.ApplicationSummary{{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+		}},
+		application: ocifunctions.Application{
+			Id:             common.String(fakeApplicationID),
+			DisplayName:    common.String("demo-app"),
+			LifecycleState: ocifunctions.ApplicationLifecycleStateActive,
+			SubnetIds:      []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+			Logging:        &ocifunctions.ApplicationLoggingConfig{LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatJson},
+		},
+		logs: []ocilogging.LogSummary{
+			{
+				Id:             common.String("ocid1.log.oc1.me-jeddah-1.source"),
+				LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+				DisplayName:    common.String("old-functions-log"),
+				LogType:        ocilogging.LogSummaryLogTypeService,
+				LifecycleState: ocilogging.LogLifecycleStateActive,
+				IsEnabled:      common.Bool(true),
+				Configuration: &ocilogging.Configuration{
+					Source: ocilogging.OciService{
+						Service:  common.String(defaultInvocationLogService),
+						Resource: common.String(fakeApplicationID),
+						Category: common.String(defaultInvocationLogCategory),
+					},
+				},
+			},
+			{
+				Id:             common.String("ocid1.log.oc1.me-jeddah-1.custom"),
+				LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+				DisplayName:    common.String("demo-app-invocation"),
+				LogType:        ocilogging.LogSummaryLogTypeCustom,
+				LifecycleState: ocilogging.LogLifecycleStateActive,
+				IsEnabled:      common.Bool(true),
+			},
+		},
+		updateLogErr: fakeServiceError{status: 409, code: "Conflict", message: "logDisplayName already exists"},
+	}
+	manager := newTestOCIManager(t, fakeClient)
+
+	_, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:          ApplicationModeManaged,
+		Region:        "me-jeddah-1",
+		CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:   "demo-app",
+		SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:        true,
+			LogGroupID:     "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LogDisplayName: "demo-app-invocation",
+			LineFormat:     "JSON",
+		}},
+		ManageApplicationLogging: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "displayName") || !strings.Contains(err.Error(), "ocid1.log.oc1.me-jeddah-1.custom") {
+		t.Fatalf("EnsureApplication error = %v, want rename displayName conflict with custom log OCID", err)
+	}
+	if fakeClient.updatedLogID != "" {
+		t.Fatalf("updatedLogID = %q, want no update when displayName is already owned", fakeClient.updatedLogID)
+	}
+	if fakeClient.createdLogGroupID != "" {
+		t.Fatalf("createdLogGroupID = %q, want no create for existing source log", fakeClient.createdLogGroupID)
+	}
+}
+
 func TestEnsureApplicationRequiresLogGroupForInvocationLogs(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := &fakeManagementClient{}
@@ -610,7 +812,26 @@ func (f *fakeManagementClient) ListLogs(_ context.Context, request ocilogging.Li
 	if f.listLogsErr != nil {
 		return ocilogging.ListLogsResponse{}, f.listLogsErr
 	}
-	return ocilogging.ListLogsResponse{Items: f.logs}, nil
+	items := make([]ocilogging.LogSummary, 0, len(f.logs))
+	for _, log := range f.logs {
+		if request.LogType != "" && string(log.LogType) != string(request.LogType) {
+			continue
+		}
+		if request.LifecycleState != "" && string(log.LifecycleState) != string(request.LifecycleState) {
+			continue
+		}
+		if request.DisplayName != nil && stringValue(log.DisplayName) != stringValue(request.DisplayName) {
+			continue
+		}
+		if request.SourceService != nil && !logSourceServiceMatches(log, stringValue(request.SourceService)) {
+			continue
+		}
+		if request.SourceResource != nil && !logSourceResourceMatches(log, stringValue(request.SourceResource)) {
+			continue
+		}
+		items = append(items, log)
+	}
+	return ocilogging.ListLogsResponse{Items: items}, nil
 }
 
 func (f *fakeManagementClient) CreateLog(_ context.Context, request ocilogging.CreateLogRequest) (ocilogging.CreateLogResponse, error) {
@@ -630,6 +851,22 @@ func (f *fakeManagementClient) UpdateLog(_ context.Context, request ocilogging.U
 		return ocilogging.UpdateLogResponse{}, f.updateLogErr
 	}
 	return ocilogging.UpdateLogResponse{}, nil
+}
+
+func logSourceServiceMatches(log ocilogging.LogSummary, service string) bool {
+	if log.Configuration == nil {
+		return false
+	}
+	source, ok := log.Configuration.Source.(ocilogging.OciService)
+	return ok && stringValue(source.Service) == service
+}
+
+func logSourceResourceMatches(log ocilogging.LogSummary, resource string) bool {
+	if log.Configuration == nil {
+		return false
+	}
+	source, ok := log.Configuration.Source.(ocilogging.OciService)
+	return ok && stringValue(source.Resource) == resource
 }
 
 func (f *fakeManagementClient) ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error) {

@@ -668,19 +668,19 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 
 	o.loggingClient.SetRegion(region)
 	var matching []ocilogging.LogSummary
+	var allLogs []ocilogging.LogSummary
 	var page *string
 	for {
 		listResponse, err := o.loggingClient.ListLogs(ctx, ocilogging.ListLogsRequest{
-			LogGroupId:     common.String(logGroupID),
-			LogType:        ocilogging.ListLogsLogTypeService,
-			LifecycleState: ocilogging.ListLogsLifecycleStateActive,
-			Limit:          common.Int(100),
-			Page:           page,
+			LogGroupId: common.String(logGroupID),
+			Limit:      common.Int(100),
+			Page:       page,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("list OCI Logging service logs in log group %s for Functions application %s: %w", logGroupID, applicationID, err)
 		}
 		for _, item := range listResponse.Items {
+			allLogs = append(allLogs, item)
 			if invocationLogSummaryMatches(item, logGroupID, applicationID, service, category) {
 				matching = append(matching, item)
 			}
@@ -694,6 +694,9 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 		return nil, fmt.Errorf("multiple OCI Logging service logs found for Functions application %s in log group %s with service %q and category %q", applicationID, logGroupID, service, category)
 	}
 	if len(matching) == 0 {
+		if conflict, ok := invocationLogDisplayNameConflict(allLogs, logGroupID, displayName, ""); ok {
+			return nil, fmt.Errorf("OCI Logging service log displayName %q is already used in log group %s by log %s in lifecycle state %s with source %s", displayName, logGroupID, stringValue(conflict.Id), conflict.LifecycleState, invocationLogSourceDescription(conflict))
+		}
 		_, err := o.loggingClient.CreateLog(ctx, ocilogging.CreateLogRequest{
 			LogGroupId: common.String(logGroupID),
 			CreateLogDetails: ocilogging.CreateLogDetails{
@@ -711,6 +714,9 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 			},
 		})
 		if err != nil {
+			if isOCIServiceConflict(err) {
+				return nil, fmt.Errorf("create OCI Logging service log %q for Functions application %s in log group %s conflicted; a log with that displayName or service source may still exist or still be deleting: %w", displayName, applicationID, logGroupID, err)
+			}
 			return nil, fmt.Errorf("create OCI Logging service log for Functions application %s in log group %s: %w", applicationID, logGroupID, err)
 		}
 		return []Event{{
@@ -721,9 +727,15 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 	}
 
 	log := matching[0]
+	if !manageableInvocationLogState(log.LifecycleState) {
+		return nil, fmt.Errorf("OCI Logging service log %s for Functions application %s in log group %s is %s; wait for the log lifecycle to settle before reconciling invocation logs", stringValue(log.Id), applicationID, logGroupID, log.LifecycleState)
+	}
 	needsUpdate := false
 	updateDetails := ocilogging.UpdateLogDetails{}
 	if stringValue(log.DisplayName) != displayName {
+		if conflict, ok := invocationLogDisplayNameConflict(allLogs, logGroupID, displayName, stringValue(log.Id)); ok {
+			return nil, fmt.Errorf("OCI Logging service log displayName %q is already used in log group %s by log %s in lifecycle state %s with source %s", displayName, logGroupID, stringValue(conflict.Id), conflict.LifecycleState, invocationLogSourceDescription(conflict))
+		}
 		updateDetails.DisplayName = common.String(displayName)
 		needsUpdate = true
 	}
@@ -982,6 +994,34 @@ func invocationLogSummaryMatches(log ocilogging.LogSummary, logGroupID, applicat
 		stringValue(source.Category) == category
 }
 
+func invocationLogDisplayNameConflict(logs []ocilogging.LogSummary, logGroupID, displayName, allowedLogID string) (ocilogging.LogSummary, bool) {
+	for _, log := range logs {
+		if stringValue(log.LogGroupId) == logGroupID &&
+			stringValue(log.DisplayName) == displayName &&
+			stringValue(log.Id) != allowedLogID {
+			return log, true
+		}
+	}
+	return ocilogging.LogSummary{}, false
+}
+
+func manageableInvocationLogState(state ocilogging.LogLifecycleStateEnum) bool {
+	return state == "" ||
+		state == ocilogging.LogLifecycleStateActive ||
+		state == ocilogging.LogLifecycleStateInactive
+}
+
+func invocationLogSourceDescription(log ocilogging.LogSummary) string {
+	if log.Configuration == nil {
+		return "<unknown>"
+	}
+	source, ok := log.Configuration.Source.(ocilogging.OciService)
+	if !ok {
+		return fmt.Sprintf("%T", log.Configuration.Source)
+	}
+	return fmt.Sprintf("%s/%s/%s", stringValue(source.Service), stringValue(source.Resource), stringValue(source.Category))
+}
+
 func effectiveApplicationRegion(region, applicationID string) string {
 	if strings.TrimSpace(region) != "" {
 		return strings.TrimSpace(region)
@@ -1007,6 +1047,11 @@ func effectiveFunctionRegion(region, functionID string) string {
 func isOCIServiceNotFound(err error) bool {
 	serviceErr, ok := common.IsServiceError(err)
 	return ok && serviceErr.GetHTTPStatusCode() == 404
+}
+
+func isOCIServiceConflict(err error) bool {
+	serviceErr, ok := common.IsServiceError(err)
+	return ok && serviceErr.GetHTTPStatusCode() == 409
 }
 
 func hasEmptyString(values []string) bool {
