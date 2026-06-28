@@ -12,6 +12,7 @@ import (
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	ocifunctions "github.com/oracle/oci-go-sdk/v65/functions"
+	ocilogging "github.com/oracle/oci-go-sdk/v65/logging"
 )
 
 func TestEnsureFunctionCreatesApplicationAndFunctionInJeddah(t *testing.T) {
@@ -21,6 +22,9 @@ func TestEnsureFunctionCreatesApplicationAndFunctionInJeddah(t *testing.T) {
 	manager, err := NewOCI(OCIOptions{
 		ConfigProvider: common.NewRawConfigurationProvider("tenancy", "user", "me-jeddah-1", "fingerprint", "private-key", nil),
 		ClientFactory: func(common.ConfigurationProvider) (functionsManagementClient, error) {
+			return fakeClient, nil
+		},
+		LoggingClientFactory: func(common.ConfigurationProvider) (loggingManagementClient, error) {
 			return fakeClient, nil
 		},
 	})
@@ -104,6 +108,9 @@ func TestEnsureFunctionUpdatesApplicationNSGsWhenChanged(t *testing.T) {
 		ClientFactory: func(common.ConfigurationProvider) (functionsManagementClient, error) {
 			return fakeClient, nil
 		},
+		LoggingClientFactory: func(common.ConfigurationProvider) (loggingManagementClient, error) {
+			return fakeClient, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewOCI returned error: %v", err)
@@ -151,6 +158,9 @@ func TestEnsureFunctionReturnsApplicationNSGUpdateFailure(t *testing.T) {
 		ClientFactory: func(common.ConfigurationProvider) (functionsManagementClient, error) {
 			return fakeClient, nil
 		},
+		LoggingClientFactory: func(common.ConfigurationProvider) (loggingManagementClient, error) {
+			return fakeClient, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewOCI returned error: %v", err)
@@ -189,6 +199,12 @@ func TestEnsureApplicationCreatesManagedApplication(t *testing.T) {
 		ApplicationNSGIDs:       []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.exampleuniqueid"},
 		ManageApplicationNSGIDs: true,
 		Config:                  map[string]string{"APP_LEVEL": "true"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:    true,
+			LogGroupID: "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LineFormat: "JSON",
+		}},
+		ManageApplicationLogging: true,
 	})
 	if err != nil {
 		t.Fatalf("EnsureApplication returned error: %v", err)
@@ -204,6 +220,27 @@ func TestEnsureApplicationCreatesManagedApplication(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fakeClient.createdApplication.Config, map[string]string{"APP_LEVEL": "true"}) {
 		t.Fatalf("created config = %#v, want app config", fakeClient.createdApplication.Config)
+	}
+	if fakeClient.createdApplication.Logging == nil || fakeClient.createdApplication.Logging.LineFormat != ocifunctions.ApplicationLoggingConfigLineFormatJson {
+		t.Fatalf("created logging = %#v, want JSON invocation logging", fakeClient.createdApplication.Logging)
+	}
+	if !hasLifecycleEvent(state.Events, EventTypeNormal, "ApplicationCreatedWithInvocationLogs") {
+		t.Fatalf("events = %#v, want ApplicationCreatedWithInvocationLogs normal event", state.Events)
+	}
+	if fakeClient.createdLogGroupID != "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid" {
+		t.Fatalf("created log group ID = %q, want log group from desired logging", fakeClient.createdLogGroupID)
+	}
+	if fakeClient.createdLog.LogType != ocilogging.CreateLogDetailsLogTypeService {
+		t.Fatalf("created log type = %q, want SERVICE", fakeClient.createdLog.LogType)
+	}
+	source, ok := fakeClient.createdLog.Configuration.Source.(ocilogging.OciService)
+	if !ok {
+		t.Fatalf("created log source = %#v, want OciService", fakeClient.createdLog.Configuration.Source)
+	}
+	if stringValue(source.Service) != defaultInvocationLogService ||
+		stringValue(source.Resource) != fakeApplicationID ||
+		stringValue(source.Category) != defaultInvocationLogCategory {
+		t.Fatalf("created log source = %#v, want functions/%s/%s", source, fakeApplicationID, defaultInvocationLogCategory)
 	}
 }
 
@@ -222,7 +259,23 @@ func TestEnsureApplicationUpdatesMutableFields(t *testing.T) {
 			SubnetIds:               []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
 			NetworkSecurityGroupIds: []string{"ocid1.networksecuritygroup.oc1.me-jeddah-1.old"},
 			Config:                  map[string]string{"OLD": "true"},
+			Logging:                 &ocifunctions.ApplicationLoggingConfig{LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatPlainText},
 		},
+		logs: []ocilogging.LogSummary{{
+			Id:             common.String("ocid1.log.oc1.me-jeddah-1.exampleuniqueid"),
+			LogGroupId:     common.String("ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid"),
+			DisplayName:    common.String("old-functions-log"),
+			LogType:        ocilogging.LogSummaryLogTypeService,
+			LifecycleState: ocilogging.LogLifecycleStateActive,
+			IsEnabled:      common.Bool(false),
+			Configuration: &ocilogging.Configuration{
+				Source: ocilogging.OciService{
+					Service:  common.String(defaultInvocationLogService),
+					Resource: common.String(fakeApplicationID),
+					Category: common.String(defaultInvocationLogCategory),
+				},
+			},
+		}},
 	}
 	manager := newTestOCIManager(t, fakeClient)
 
@@ -236,6 +289,13 @@ func TestEnsureApplicationUpdatesMutableFields(t *testing.T) {
 		ManageApplicationNSGIDs:        true,
 		Config:                         map[string]string{"NEW": "true"},
 		ManageApplicationConfiguration: true,
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:        true,
+			LogGroupID:     "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LogDisplayName: "demo-app-invocation",
+			LineFormat:     "JSON",
+		}},
+		ManageApplicationLogging: true,
 	})
 	if err != nil {
 		t.Fatalf("EnsureApplication returned error: %v", err)
@@ -248,6 +308,43 @@ func TestEnsureApplicationUpdatesMutableFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fakeClient.updatedApplication.Config, map[string]string{"NEW": "true"}) {
 		t.Fatalf("updated config = %#v, want new config", fakeClient.updatedApplication.Config)
+	}
+	if fakeClient.updatedApplication.Logging == nil || fakeClient.updatedApplication.Logging.LineFormat != ocifunctions.ApplicationLoggingConfigLineFormatJson {
+		t.Fatalf("updated logging = %#v, want JSON invocation logging", fakeClient.updatedApplication.Logging)
+	}
+	if !hasLifecycleEvent(state.Events, EventTypeNormal, "ApplicationInvocationLogsUpdated") {
+		t.Fatalf("events = %#v, want ApplicationInvocationLogsUpdated", state.Events)
+	}
+	if fakeClient.updatedLogID != "ocid1.log.oc1.me-jeddah-1.exampleuniqueid" {
+		t.Fatalf("updated log ID = %q, want existing service log", fakeClient.updatedLogID)
+	}
+	if fakeClient.updatedLog.IsEnabled == nil || !*fakeClient.updatedLog.IsEnabled {
+		t.Fatalf("updated log enabled = %#v, want true", fakeClient.updatedLog.IsEnabled)
+	}
+	if fakeClient.updatedLog.DisplayName == nil || *fakeClient.updatedLog.DisplayName != "demo-app-invocation" {
+		t.Fatalf("updated log displayName = %#v, want demo-app-invocation", fakeClient.updatedLog.DisplayName)
+	}
+}
+
+func TestEnsureApplicationRequiresLogGroupForInvocationLogs(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := &fakeManagementClient{}
+	manager := newTestOCIManager(t, fakeClient)
+
+	_, err := manager.EnsureApplication(ctx, DesiredApplication{
+		Mode:          ApplicationModeManaged,
+		Region:        "me-jeddah-1",
+		CompartmentID: "ocid1.compartment.oc1..exampleuniqueid",
+		DisplayName:   "demo-app",
+		SubnetIDs:     []string{"ocid1.subnet.oc1.me-jeddah-1.exampleuniqueid"},
+		Logging: &ApplicationLogging{InvocationLogs: &ApplicationInvocationLogs{
+			Enabled:    true,
+			LineFormat: "JSON",
+		}},
+		ManageApplicationLogging: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "logGroupId is required") {
+		t.Fatalf("EnsureApplication error = %v, want missing logGroupId error", err)
 	}
 }
 
@@ -424,6 +521,15 @@ type fakeManagementClient struct {
 	updatedApplicationID string
 	deletedApplicationID string
 	deleteApplicationErr error
+	logs                 []ocilogging.LogSummary
+	createdLogGroupID    string
+	createdLog           ocilogging.CreateLogDetails
+	updatedLogGroupID    string
+	updatedLogID         string
+	updatedLog           ocilogging.UpdateLogDetails
+	listLogsErr          error
+	createLogErr         error
+	updateLogErr         error
 	createdFunction      ocifunctions.CreateFunctionDetails
 	functions            []ocifunctions.FunctionSummary
 	deletedFunctionID    string
@@ -475,6 +581,7 @@ func (f *fakeManagementClient) UpdateApplication(_ context.Context, request ocif
 	}
 	application.NetworkSecurityGroupIds = request.UpdateApplicationDetails.NetworkSecurityGroupIds
 	application.Config = request.UpdateApplicationDetails.Config
+	application.Logging = request.UpdateApplicationDetails.Logging
 	application.LifecycleState = ocifunctions.ApplicationLifecycleStateActive
 	return ocifunctions.UpdateApplicationResponse{Application: application}, nil
 }
@@ -485,6 +592,32 @@ func (f *fakeManagementClient) DeleteApplication(_ context.Context, request ocif
 		return ocifunctions.DeleteApplicationResponse{}, f.deleteApplicationErr
 	}
 	return ocifunctions.DeleteApplicationResponse{}, nil
+}
+
+func (f *fakeManagementClient) ListLogs(_ context.Context, request ocilogging.ListLogsRequest) (ocilogging.ListLogsResponse, error) {
+	if f.listLogsErr != nil {
+		return ocilogging.ListLogsResponse{}, f.listLogsErr
+	}
+	return ocilogging.ListLogsResponse{Items: f.logs}, nil
+}
+
+func (f *fakeManagementClient) CreateLog(_ context.Context, request ocilogging.CreateLogRequest) (ocilogging.CreateLogResponse, error) {
+	f.createdLogGroupID = stringValue(request.LogGroupId)
+	f.createdLog = request.CreateLogDetails
+	if f.createLogErr != nil {
+		return ocilogging.CreateLogResponse{}, f.createLogErr
+	}
+	return ocilogging.CreateLogResponse{}, nil
+}
+
+func (f *fakeManagementClient) UpdateLog(_ context.Context, request ocilogging.UpdateLogRequest) (ocilogging.UpdateLogResponse, error) {
+	f.updatedLogGroupID = stringValue(request.LogGroupId)
+	f.updatedLogID = stringValue(request.LogId)
+	f.updatedLog = request.UpdateLogDetails
+	if f.updateLogErr != nil {
+		return ocilogging.UpdateLogResponse{}, f.updateLogErr
+	}
+	return ocilogging.UpdateLogResponse{}, nil
 }
 
 func (f *fakeManagementClient) ListFunctions(context.Context, ocifunctions.ListFunctionsRequest) (ocifunctions.ListFunctionsResponse, error) {
@@ -531,6 +664,9 @@ func newTestOCIManager(t *testing.T, fakeClient *fakeManagementClient) *OCI {
 	manager, err := NewOCI(OCIOptions{
 		ConfigProvider: common.NewRawConfigurationProvider("tenancy", "user", "me-jeddah-1", "fingerprint", "private-key", nil),
 		ClientFactory: func(common.ConfigurationProvider) (functionsManagementClient, error) {
+			return fakeClient, nil
+		},
+		LoggingClientFactory: func(common.ConfigurationProvider) (loggingManagementClient, error) {
 			return fakeClient, nil
 		},
 	})

@@ -12,6 +12,7 @@ import (
 	operatorauth "github.com/oracle/oci-functions-operator/internal/ociauth"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	ocifunctions "github.com/oracle/oci-go-sdk/v65/functions"
+	ocilogging "github.com/oracle/oci-go-sdk/v65/logging"
 )
 
 const (
@@ -28,6 +29,9 @@ const (
 	OCIAuthModeWorkload = operatorauth.OCIAuthModeWorkload
 	// OCIAuthModeConfig uses a local OCI config file/profile.
 	OCIAuthModeConfig = operatorauth.OCIAuthModeConfig
+
+	defaultInvocationLogService  = "functions"
+	defaultInvocationLogCategory = "invoke"
 )
 
 type functionsManagementClient interface {
@@ -44,7 +48,15 @@ type functionsManagementClient interface {
 	DeleteFunction(context.Context, ocifunctions.DeleteFunctionRequest) (ocifunctions.DeleteFunctionResponse, error)
 }
 
+type loggingManagementClient interface {
+	SetRegion(region string)
+	ListLogs(context.Context, ocilogging.ListLogsRequest) (ocilogging.ListLogsResponse, error)
+	CreateLog(context.Context, ocilogging.CreateLogRequest) (ocilogging.CreateLogResponse, error)
+	UpdateLog(context.Context, ocilogging.UpdateLogRequest) (ocilogging.UpdateLogResponse, error)
+}
+
 type managementClientFactory func(common.ConfigurationProvider) (functionsManagementClient, error)
+type loggingManagementClientFactory func(common.ConfigurationProvider) (loggingManagementClient, error)
 type workloadIdentityProviderFactory = operatorauth.WorkloadIdentityProviderFactory
 type configFileProviderFactory = operatorauth.ConfigFileProviderFactory
 
@@ -56,11 +68,13 @@ type OCIOptions struct {
 	WorkloadIdentityProviderFactory workloadIdentityProviderFactory
 	ConfigFileProviderFactory       configFileProviderFactory
 	ClientFactory                   managementClientFactory
+	LoggingClientFactory            loggingManagementClientFactory
 }
 
 // OCI manages OCI Functions lifecycle through the OCI Go SDK.
 type OCI struct {
-	client functionsManagementClient
+	client        functionsManagementClient
+	loggingClient loggingManagementClient
 }
 
 // NewOCIFromEnvironment constructs an OCI lifecycle manager from OCI-related environment variables.
@@ -93,11 +107,28 @@ func NewOCI(options OCIOptions) (*OCI, error) {
 		return nil, fmt.Errorf("configure OCI Functions management client: %w", err)
 	}
 
-	return &OCI{client: client}, nil
+	loggingClientFactory := options.LoggingClientFactory
+	if loggingClientFactory == nil {
+		loggingClientFactory = newLoggingManagementClient
+	}
+	loggingClient, err := loggingClientFactory(configProvider)
+	if err != nil {
+		return nil, fmt.Errorf("configure OCI Logging management client: %w", err)
+	}
+
+	return &OCI{client: client, loggingClient: loggingClient}, nil
 }
 
 func newFunctionsManagementClient(configProvider common.ConfigurationProvider) (functionsManagementClient, error) {
 	client, err := ocifunctions.NewFunctionsManagementClientWithConfigurationProvider(configProvider)
+	if err != nil {
+		return nil, err
+	}
+	return &client, nil
+}
+
+func newLoggingManagementClient(configProvider common.ConfigurationProvider) (loggingManagementClient, error) {
+	client, err := ocilogging.NewLoggingManagementClientWithConfigurationProvider(configProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +240,18 @@ func (o *OCI) EnsureApplication(ctx context.Context, desired DesiredApplication)
 			Region:        region,
 			Events:        events,
 		}, err
+	}
+	if applicationInvocationLoggingEnabled(desired.Logging) {
+		logEvents, err := o.ensureApplicationInvocationLog(ctx, desired, stringValue(application.Id), region)
+		events = append(events, logEvents...)
+		if err != nil {
+			return ApplicationState{
+				ApplicationID: stringValue(application.Id),
+				DisplayName:   stringValue(application.DisplayName),
+				Region:        region,
+				Events:        events,
+			}, err
+		}
 	}
 
 	state := ApplicationState{
@@ -501,6 +544,7 @@ func (o *OCI) ensureApplication(ctx context.Context, desired DesiredApplication)
 			SubnetIds:               copyStringSlice(desired.SubnetIDs),
 			NetworkSecurityGroupIds: copyStringSlice(desired.ApplicationNSGIDs),
 			Config:                  copyStringMap(desired.Config),
+			Logging:                 applicationLoggingConfig(desired.Logging),
 			FreeformTags:            copyStringMap(desired.FreeformTags),
 		},
 	})
@@ -514,6 +558,13 @@ func (o *OCI) ensureApplication(ctx context.Context, desired DesiredApplication)
 			Type:    EventTypeNormal,
 			Reason:  "ApplicationCreatedWithNSGs",
 			Message: fmt.Sprintf("Created OCI Functions application %q with NSGs %s.", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs)),
+		})
+	}
+	if applicationInvocationLoggingEnabled(desired.Logging) {
+		events = append(events, Event{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationCreatedWithInvocationLogs",
+			Message: fmt.Sprintf("Created OCI Functions application %q with invocation logs enabled using %s line format.", desired.DisplayName, effectiveInvocationLogLineFormat(desired.Logging)),
 		})
 	}
 	return created.Application, events, nil
@@ -538,14 +589,24 @@ func (o *OCI) ensureApplicationMutableFields(ctx context.Context, desired Desire
 		return application, nil, fmt.Errorf("OCI Functions application %q subnetIds differ and cannot be updated by the OCI Functions API", desired.DisplayName)
 	}
 	needsUpdate := false
+	nsgUpdated := false
+	loggingUpdated := false
 	updateDetails := ocifunctions.UpdateApplicationDetails{}
 	if desired.ManageApplicationNSGIDs && !sameStringSet(application.NetworkSecurityGroupIds, desired.ApplicationNSGIDs) {
 		updateDetails.NetworkSecurityGroupIds = copyStringSlice(desired.ApplicationNSGIDs)
 		needsUpdate = true
+		nsgUpdated = true
 	}
 	if desired.ManageApplicationConfiguration && !reflect.DeepEqual(nilToEmptyMap(application.Config), nilToEmptyMap(desired.Config)) {
 		updateDetails.Config = copyStringMap(desired.Config)
 		needsUpdate = true
+	}
+	if desired.ManageApplicationLogging && !sameApplicationLogging(application.Logging, desired.Logging) {
+		if applicationInvocationLoggingEnabled(desired.Logging) {
+			updateDetails.Logging = applicationLoggingConfig(desired.Logging)
+			needsUpdate = true
+			loggingUpdated = true
+		}
 	}
 	if !needsUpdate {
 		return application, nil, nil
@@ -560,10 +621,14 @@ func (o *OCI) ensureApplicationMutableFields(ctx context.Context, desired Desire
 		reason := "ApplicationUpdateFailed"
 		message := fmt.Sprintf("Failed to update OCI Functions application %q configuration: %v", desired.DisplayName, err)
 		errorMessage := fmt.Sprintf("update OCI Functions application %s configuration: %v", applicationID, err)
-		if desired.ManageApplicationNSGIDs {
+		if nsgUpdated {
 			reason = "ApplicationNSGUpdateFailed"
 			message = fmt.Sprintf("Failed to update OCI Functions application %q NSG configuration to %s: %v", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs), err)
 			errorMessage = fmt.Sprintf("update OCI Functions application %s NSG configuration: %v", applicationID, err)
+		} else if loggingUpdated {
+			reason = "ApplicationLoggingUpdateFailed"
+			message = fmt.Sprintf("Failed to update OCI Functions application %q invocation log configuration: %v", desired.DisplayName, err)
+			errorMessage = fmt.Sprintf("update OCI Functions application %s invocation log configuration: %v", applicationID, err)
 		}
 		event := Event{
 			Type:    EventTypeWarning,
@@ -574,14 +639,109 @@ func (o *OCI) ensureApplicationMutableFields(ctx context.Context, desired Desire
 	}
 
 	events := []Event{}
-	if desired.ManageApplicationNSGIDs {
+	if nsgUpdated {
 		events = append(events, Event{
 			Type:    EventTypeNormal,
 			Reason:  "ApplicationNSGsUpdated",
 			Message: fmt.Sprintf("Updated OCI Functions application %q NSG configuration to %s.", desired.DisplayName, formatStringList(desired.ApplicationNSGIDs)),
 		})
 	}
+	if loggingUpdated {
+		events = append(events, Event{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationInvocationLogsUpdated",
+			Message: fmt.Sprintf("Updated OCI Functions application %q invocation logs to %s line format.", desired.DisplayName, effectiveInvocationLogLineFormat(desired.Logging)),
+		})
+	}
 	return updated.Application, events, nil
+}
+
+func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired DesiredApplication, applicationID, region string) ([]Event, error) {
+	if o.loggingClient == nil {
+		return nil, fmt.Errorf("OCI Logging management client is not configured")
+	}
+	logs := desired.Logging.InvocationLogs
+	logGroupID := strings.TrimSpace(logs.LogGroupID)
+	displayName := effectiveInvocationLogDisplayName(desired.DisplayName, logs)
+	service := effectiveInvocationLogService(logs)
+	category := effectiveInvocationLogCategory(logs)
+
+	o.loggingClient.SetRegion(region)
+	listResponse, err := o.loggingClient.ListLogs(ctx, ocilogging.ListLogsRequest{
+		LogGroupId:     common.String(logGroupID),
+		LogType:        ocilogging.ListLogsLogTypeService,
+		SourceService:  common.String(service),
+		SourceResource: common.String(applicationID),
+		LifecycleState: ocilogging.ListLogsLifecycleStateActive,
+		Limit:          common.Int(50),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list OCI Logging service logs for Functions application %s: %w", applicationID, err)
+	}
+
+	var matching []ocilogging.LogSummary
+	for _, item := range listResponse.Items {
+		if invocationLogSummaryMatches(item, logGroupID, applicationID, service, category) {
+			matching = append(matching, item)
+		}
+	}
+	if len(matching) > 1 {
+		return nil, fmt.Errorf("multiple OCI Logging service logs found for Functions application %s in log group %s with service %q and category %q", applicationID, logGroupID, service, category)
+	}
+	if len(matching) == 0 {
+		_, err := o.loggingClient.CreateLog(ctx, ocilogging.CreateLogRequest{
+			LogGroupId: common.String(logGroupID),
+			CreateLogDetails: ocilogging.CreateLogDetails{
+				DisplayName: common.String(displayName),
+				LogType:     ocilogging.CreateLogDetailsLogTypeService,
+				IsEnabled:   common.Bool(logs.Enabled),
+				Configuration: &ocilogging.Configuration{
+					CompartmentId: common.String(strings.TrimSpace(desired.CompartmentID)),
+					Source: ocilogging.OciService{
+						Service:  common.String(service),
+						Resource: common.String(applicationID),
+						Category: common.String(category),
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create OCI Logging service log for Functions application %s in log group %s: %w", applicationID, logGroupID, err)
+		}
+		return []Event{{
+			Type:    EventTypeNormal,
+			Reason:  "ApplicationInvocationLogCreated",
+			Message: fmt.Sprintf("Created OCI Logging service log %q for Functions application %q in log group %s.", displayName, desired.DisplayName, logGroupID),
+		}}, nil
+	}
+
+	log := matching[0]
+	needsUpdate := false
+	updateDetails := ocilogging.UpdateLogDetails{}
+	if stringValue(log.DisplayName) != displayName {
+		updateDetails.DisplayName = common.String(displayName)
+		needsUpdate = true
+	}
+	if boolValue(log.IsEnabled) != logs.Enabled {
+		updateDetails.IsEnabled = common.Bool(logs.Enabled)
+		needsUpdate = true
+	}
+	if !needsUpdate {
+		return nil, nil
+	}
+	_, err = o.loggingClient.UpdateLog(ctx, ocilogging.UpdateLogRequest{
+		LogGroupId:       common.String(logGroupID),
+		LogId:            common.String(stringValue(log.Id)),
+		UpdateLogDetails: updateDetails,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update OCI Logging service log %s for Functions application %s: %w", stringValue(log.Id), applicationID, err)
+	}
+	return []Event{{
+		Type:    EventTypeNormal,
+		Reason:  "ApplicationInvocationLogUpdated",
+		Message: fmt.Sprintf("Updated OCI Logging service log %q for Functions application %q.", displayName, desired.DisplayName),
+	}}, nil
 }
 
 func (o *OCI) ensureFunction(ctx context.Context, desired DesiredFunction, applicationID string) (ocifunctions.Function, error) {
@@ -723,6 +883,12 @@ func validateDesiredApplication(desired DesiredApplication) error {
 		return fmt.Errorf("managed FunctionApplication requires spec.subnetIds")
 	case desired.ManageApplicationNSGIDs && hasEmptyString(desired.ApplicationNSGIDs):
 		return fmt.Errorf("FunctionApplication requires spec.nsgIds entries to be non-empty")
+	case applicationInvocationLoggingEnabled(desired.Logging) && strings.TrimSpace(desired.Logging.InvocationLogs.LogGroupID) == "":
+		return fmt.Errorf("FunctionApplication logging.invocationLogs.logGroupId is required when invocation logs are enabled")
+	case applicationInvocationLoggingEnabled(desired.Logging) && strings.TrimSpace(effectiveInvocationLogService(desired.Logging.InvocationLogs)) == "":
+		return fmt.Errorf("FunctionApplication logging.invocationLogs.service must be non-empty")
+	case applicationInvocationLoggingEnabled(desired.Logging) && strings.TrimSpace(effectiveInvocationLogCategory(desired.Logging.InvocationLogs)) == "":
+		return fmt.Errorf("FunctionApplication logging.invocationLogs.category must be non-empty")
 	}
 	return nil
 }
@@ -739,6 +905,76 @@ func desiredApplicationFromFunction(desired DesiredFunction) DesiredApplication 
 		FreeformTags:                   copyStringMap(desired.FreeformTags),
 		ManageApplicationConfiguration: false,
 	}
+}
+
+func applicationLoggingConfig(logging *ApplicationLogging) *ocifunctions.ApplicationLoggingConfig {
+	if !applicationInvocationLoggingEnabled(logging) {
+		return nil
+	}
+	return &ocifunctions.ApplicationLoggingConfig{
+		LineFormat: ocifunctions.ApplicationLoggingConfigLineFormatEnum(effectiveInvocationLogLineFormat(logging)),
+	}
+}
+
+func applicationInvocationLoggingEnabled(logging *ApplicationLogging) bool {
+	return logging != nil && logging.InvocationLogs != nil && logging.InvocationLogs.Enabled
+}
+
+func effectiveInvocationLogDisplayName(applicationDisplayName string, logs *ApplicationInvocationLogs) string {
+	if logs != nil && strings.TrimSpace(logs.LogDisplayName) != "" {
+		return strings.TrimSpace(logs.LogDisplayName)
+	}
+	if strings.TrimSpace(applicationDisplayName) == "" {
+		return "function-application-invocation"
+	}
+	return strings.TrimSpace(applicationDisplayName) + "-invocation"
+}
+
+func effectiveInvocationLogService(logs *ApplicationInvocationLogs) string {
+	if logs != nil && strings.TrimSpace(logs.Service) != "" {
+		return strings.TrimSpace(logs.Service)
+	}
+	return defaultInvocationLogService
+}
+
+func effectiveInvocationLogCategory(logs *ApplicationInvocationLogs) string {
+	if logs != nil && strings.TrimSpace(logs.Category) != "" {
+		return strings.TrimSpace(logs.Category)
+	}
+	return defaultInvocationLogCategory
+}
+
+func effectiveInvocationLogLineFormat(logging *ApplicationLogging) string {
+	if logging == nil || logging.InvocationLogs == nil || strings.TrimSpace(logging.InvocationLogs.LineFormat) == "" {
+		return "JSON"
+	}
+	return strings.TrimSpace(logging.InvocationLogs.LineFormat)
+}
+
+func sameApplicationLogging(actual *ocifunctions.ApplicationLoggingConfig, desired *ApplicationLogging) bool {
+	if !applicationInvocationLoggingEnabled(desired) {
+		return true
+	}
+	if actual == nil {
+		return false
+	}
+	return string(actual.LineFormat) == effectiveInvocationLogLineFormat(desired)
+}
+
+func invocationLogSummaryMatches(log ocilogging.LogSummary, logGroupID, applicationID, service, category string) bool {
+	if stringValue(log.LogGroupId) != logGroupID || log.LogType != ocilogging.LogSummaryLogTypeService {
+		return false
+	}
+	if log.Configuration == nil {
+		return false
+	}
+	source, ok := log.Configuration.Source.(ocilogging.OciService)
+	if !ok {
+		return false
+	}
+	return stringValue(source.Service) == service &&
+		stringValue(source.Resource) == applicationID &&
+		stringValue(source.Category) == category
 }
 
 func effectiveApplicationRegion(region, applicationID string) string {
@@ -800,6 +1036,10 @@ func stringValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
 }
 
 func int64Value(value *int64) int64 {

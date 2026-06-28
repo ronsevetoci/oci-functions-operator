@@ -157,6 +157,12 @@ Allow any-user to manage functions-family in compartment <function-compartment> 
 Allow any-user to use virtual-network-family in compartment <function-network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
+For `FunctionApplication.spec.logging.invocationLogs`, add Logging Management permission in the compartment that contains the referenced log group:
+
+```text
+Allow any-user to manage log-groups in compartment <logging-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+```
+
 Events rule invocation policy:
 
 ```text

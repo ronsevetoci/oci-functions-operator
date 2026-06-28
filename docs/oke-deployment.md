@@ -116,6 +116,12 @@ If the application subnets live in a different compartment, grant network use th
 Allow any-user to use virtual-network-family in compartment <network-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
+If `FunctionApplication.spec.logging.invocationLogs` is enabled, the operator also calls OCI Logging Management to list, create, and update a service log in the existing log group:
+
+```text
+Allow any-user to manage log-groups in compartment <logging-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
+```
+
 If the function image is in a private OCIR repository, add the appropriate repository read policy for the Functions application principal in your registry compartment/tenancy. Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but network egress is still required.
 
 For existing-mode invocation only, you may be able to narrow policy to `use fn-function` for the target compartment instead of `manage`.
@@ -169,6 +175,11 @@ spec:
   # The NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
   # nsgIds:
   # - ${NSG_OCID}
+  logging:
+    invocationLogs:
+      enabled: true
+      logGroupId: <LOG_GROUP_OCID>
+      lineFormat: JSON
   config:
     LOG_LEVEL: info
 ---
@@ -203,6 +214,8 @@ kubectl get function oci-managed-hello -o yaml
 - `status.invokeEndpoint`
 
 Legacy managed `Function` manifests that put `region`, `compartmentId`, `applicationName`, `subnetIds`, and `nsgIds` under `spec.config` remain supported for backward compatibility. Prefer `FunctionApplication` for new manifests because OCI Functions Applications are shared resources.
+
+`FunctionApplication.spec.logging.invocationLogs` configures the Functions application invocation log settings. Set `logGroupId` to an existing OCI Logging log group. The operator creates or updates the service log for the resolved Functions application and sets the application log line format.
 
 ## Existing Function Mode
 

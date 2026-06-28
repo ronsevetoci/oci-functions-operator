@@ -17,5 +17,10 @@ spec:
   # Each NSG must allow egress TCP 443 to Oracle Services Network/OCIR.
   # nsgIds:
   # - <NSG_OCID>
+  logging:
+    invocationLogs:
+      enabled: true
+      logGroupId: <LOG_GROUP_OCID>
+      lineFormat: JSON
   config:
     APP_LEVEL_GREETING: "hello from function application"

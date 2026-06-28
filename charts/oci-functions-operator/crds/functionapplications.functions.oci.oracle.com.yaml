@@ -86,6 +86,56 @@ spec:
                   application.
                 pattern: ^ocid1\.fnapp\..+
                 type: string
+              logging:
+                description: |-
+                  Logging configures function invocation logs for this OCI Functions application.
+                  Omit this field to leave application logging unmanaged.
+                properties:
+                  invocationLogs:
+                    description: InvocationLogs configures OCI Functions invocation
+                      logs for this application.
+                    properties:
+                      category:
+                        description: |-
+                          Category is the OCI Logging service log category.
+                          Defaults to invoke.
+                        minLength: 1
+                        type: string
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled enables invocation log configuration on the OCI Functions application.
+                          Omit spec.logging entirely to leave invocation logging unmanaged.
+                        type: boolean
+                      lineFormat:
+                        default: JSON
+                        description: |-
+                          LineFormat is the emitted function log line format.
+                          Defaults to JSON when invocation logging is enabled and no format is set.
+                        enum:
+                        - JSON
+                        - PLAIN_TEXT
+                        type: string
+                      logDisplayName:
+                        description: |-
+                          LogDisplayName is the display name for the OCI Logging service log.
+                          Defaults to "<function-application-display-name>-invocation".
+                        maxLength: 255
+                        type: string
+                      logGroupId:
+                        description: |-
+                          LogGroupID is the OCID of an existing OCI Logging log group where the Functions service log should be created or updated.
+                          Required when invocation logs are enabled.
+                        pattern: ^ocid1\.loggroup\..+
+                        type: string
+                      service:
+                        description: |-
+                          Service is the OCI Logging service source name.
+                          Defaults to functions.
+                        minLength: 1
+                        type: string
+                    type: object
+                type: object
               mode:
                 default: Managed
                 description: |-
@@ -127,6 +177,10 @@ spec:
                 and spec.compartmentId
               rule: '!has(self.mode) || self.mode != ''Existing'' || has(self.existingApplicationId)
                 || (has(self.displayName) && has(self.compartmentId))'
+            - message: spec.logging.invocationLogs.logGroupId is required when invocation
+                logs are enabled
+              rule: '!has(self.logging) || !has(self.logging.invocationLogs) || (has(self.logging.invocationLogs.enabled)
+                && self.logging.invocationLogs.enabled == false) || has(self.logging.invocationLogs.logGroupId)'
           status:
             description: FunctionApplicationStatus defines the observed state of FunctionApplication.
             properties:

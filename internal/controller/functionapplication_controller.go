@@ -201,9 +201,36 @@ func desiredApplicationFromSpec(application *functionsv1alpha1.FunctionApplicati
 		ApplicationNSGIDs:              trimStringSlice(application.Spec.NSGIDs),
 		ManageApplicationNSGIDs:        application.Spec.NSGIDs != nil,
 		Config:                         copyStringMap(application.Spec.Config),
+		Logging:                        applicationLoggingFromSpec(application.Spec.Logging),
 		ExistingApplicationID:          strings.TrimSpace(application.Spec.ExistingApplicationID),
 		ManageApplicationConfiguration: application.Spec.Config != nil,
+		ManageApplicationLogging:       application.Spec.Logging != nil && application.Spec.Logging.InvocationLogs != nil,
 	}
+}
+
+func applicationLoggingFromSpec(spec *functionsv1alpha1.FunctionApplicationLogging) *lifecycle.ApplicationLogging {
+	if spec == nil || spec.InvocationLogs == nil {
+		return nil
+	}
+	invocationLogs := spec.InvocationLogs
+	lineFormat := strings.TrimSpace(string(spec.InvocationLogs.LineFormat))
+	if lineFormat == "" {
+		lineFormat = string(functionsv1alpha1.FunctionApplicationLogLineFormatJSON)
+	}
+	return &lifecycle.ApplicationLogging{
+		InvocationLogs: &lifecycle.ApplicationInvocationLogs{
+			Enabled:        invocationLoggingEnabledFromSpec(invocationLogs.Enabled),
+			LogGroupID:     strings.TrimSpace(invocationLogs.LogGroupID),
+			LogDisplayName: strings.TrimSpace(invocationLogs.LogDisplayName),
+			Service:        strings.TrimSpace(invocationLogs.Service),
+			Category:       strings.TrimSpace(invocationLogs.Category),
+			LineFormat:     lineFormat,
+		},
+	}
+}
+
+func invocationLoggingEnabledFromSpec(enabled *bool) bool {
+	return enabled == nil || *enabled
 }
 
 func applicationDeleteTarget(application *functionsv1alpha1.FunctionApplication) lifecycle.ApplicationDeleteTarget {

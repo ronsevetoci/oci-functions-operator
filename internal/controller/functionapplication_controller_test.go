@@ -21,6 +21,14 @@ func TestFunctionApplicationReconcilerManagedMarksReady(t *testing.T) {
 	ctx := context.Background()
 	scheme := newTestScheme(t)
 	application := managedFunctionApplication("demo-app", "default")
+	enabled := true
+	application.Spec.Logging = &functionsv1alpha1.FunctionApplicationLogging{
+		InvocationLogs: &functionsv1alpha1.FunctionApplicationInvocationLogs{
+			Enabled:    &enabled,
+			LogGroupID: "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid",
+			LineFormat: functionsv1alpha1.FunctionApplicationLogLineFormatJSON,
+		},
+	}
 	manager := &fakeLifecycleManager{
 		applicationState: lifecycle.ApplicationState{
 			ApplicationID: "ocid1.fnapp.oc1.me-jeddah-1.exampleuniqueid",
@@ -50,6 +58,16 @@ func TestFunctionApplicationReconcilerManagedMarksReady(t *testing.T) {
 	}
 	if !manager.desiredApplication.ManageApplicationNSGIDs {
 		t.Fatalf("ManageApplicationNSGIDs = false, want true when nsgIds is set")
+	}
+	if !manager.desiredApplication.ManageApplicationLogging {
+		t.Fatalf("ManageApplicationLogging = false, want true when logging is set")
+	}
+	if manager.desiredApplication.Logging == nil ||
+		manager.desiredApplication.Logging.InvocationLogs == nil ||
+		!manager.desiredApplication.Logging.InvocationLogs.Enabled ||
+		manager.desiredApplication.Logging.InvocationLogs.LogGroupID != "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid" ||
+		manager.desiredApplication.Logging.InvocationLogs.LineFormat != "JSON" {
+		t.Fatalf("desired logging = %#v, want enabled JSON invocation logs", manager.desiredApplication.Logging)
 	}
 
 	var updated functionsv1alpha1.FunctionApplication

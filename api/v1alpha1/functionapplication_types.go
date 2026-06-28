@@ -38,8 +38,20 @@ const (
 	FunctionApplicationPhaseError   FunctionApplicationPhase = "Error"
 )
 
+// FunctionApplicationLogLineFormat selects the emitted function invocation log line format.
+// +kubebuilder:validation:Enum=JSON;PLAIN_TEXT
+type FunctionApplicationLogLineFormat string
+
+const (
+	// FunctionApplicationLogLineFormatJSON emits invocation logs as JSON lines.
+	FunctionApplicationLogLineFormatJSON FunctionApplicationLogLineFormat = "JSON"
+	// FunctionApplicationLogLineFormatPlainText emits invocation logs as plain text.
+	FunctionApplicationLogLineFormatPlainText FunctionApplicationLogLineFormat = "PLAIN_TEXT"
+)
+
 // FunctionApplicationSpec defines the desired state of FunctionApplication.
 // +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Existing' || has(self.existingApplicationId) || (has(self.displayName) && has(self.compartmentId))",message="mode Existing requires spec.existingApplicationId or spec.displayName and spec.compartmentId"
+// +kubebuilder:validation:XValidation:rule="!has(self.logging) || !has(self.logging.invocationLogs) || (has(self.logging.invocationLogs.enabled) && self.logging.invocationLogs.enabled == false) || has(self.logging.invocationLogs.logGroupId)",message="spec.logging.invocationLogs.logGroupId is required when invocation logs are enabled"
 type FunctionApplicationSpec struct {
 	// Mode selects whether the operator manages or only resolves an existing OCI Functions application.
 	// Defaults to Managed.
@@ -80,6 +92,11 @@ type FunctionApplicationSpec struct {
 	// +optional
 	Config map[string]string `json:"config,omitempty"`
 
+	// Logging configures function invocation logs for this OCI Functions application.
+	// Omit this field to leave application logging unmanaged.
+	// +optional
+	Logging *FunctionApplicationLogging `json:"logging,omitempty"`
+
 	// ExistingApplicationID points at an existing OCI Functions application.
 	// +optional
 	// +kubebuilder:validation:Pattern=^ocid1\.fnapp\..+
@@ -90,6 +107,52 @@ type FunctionApplicationSpec struct {
 	// +optional
 	// +kubebuilder:default=Retain
 	DeletionPolicy FunctionDeletionPolicy `json:"deletionPolicy,omitempty"`
+}
+
+// FunctionApplicationLogging contains application-level logging settings.
+type FunctionApplicationLogging struct {
+	// InvocationLogs configures OCI Functions invocation logs for this application.
+	// +optional
+	InvocationLogs *FunctionApplicationInvocationLogs `json:"invocationLogs,omitempty"`
+}
+
+// FunctionApplicationInvocationLogs configures OCI Functions invocation logs.
+type FunctionApplicationInvocationLogs struct {
+	// Enabled enables invocation log configuration on the OCI Functions application.
+	// Omit spec.logging entirely to leave invocation logging unmanaged.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// LogGroupID is the OCID of an existing OCI Logging log group where the Functions service log should be created or updated.
+	// Required when invocation logs are enabled.
+	// +optional
+	// +kubebuilder:validation:Pattern=^ocid1\.loggroup\..+
+	LogGroupID string `json:"logGroupId,omitempty"`
+
+	// LogDisplayName is the display name for the OCI Logging service log.
+	// Defaults to "<function-application-display-name>-invocation".
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	LogDisplayName string `json:"logDisplayName,omitempty"`
+
+	// Service is the OCI Logging service source name.
+	// Defaults to functions.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	Service string `json:"service,omitempty"`
+
+	// Category is the OCI Logging service log category.
+	// Defaults to invoke.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	Category string `json:"category,omitempty"`
+
+	// LineFormat is the emitted function log line format.
+	// Defaults to JSON when invocation logging is enabled and no format is set.
+	// +optional
+	// +kubebuilder:default=JSON
+	LineFormat FunctionApplicationLogLineFormat `json:"lineFormat,omitempty"`
 }
 
 // FunctionApplicationStatus defines the observed state of FunctionApplication.

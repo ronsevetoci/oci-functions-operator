@@ -64,8 +64,25 @@ type DesiredApplication struct {
 	ManageApplicationNSGIDs        bool
 	Config                         map[string]string
 	FreeformTags                   map[string]string
+	Logging                        *ApplicationLogging
 	ExistingApplicationID          string
 	ManageApplicationConfiguration bool
+	ManageApplicationLogging       bool
+}
+
+// ApplicationLogging is the SDK-free desired logging configuration for an OCI Functions application.
+type ApplicationLogging struct {
+	InvocationLogs *ApplicationInvocationLogs
+}
+
+// ApplicationInvocationLogs describes OCI Functions invocation log configuration.
+type ApplicationInvocationLogs struct {
+	Enabled        bool
+	LogGroupID     string
+	LogDisplayName string
+	Service        string
+	Category       string
+	LineFormat     string
 }
 
 // ApplicationState is the SDK-free observed state for an OCI Functions application.

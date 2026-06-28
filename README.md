@@ -12,7 +12,7 @@ ghcr.io/ronsevetoci/oci-functions-operator/controller:v0.1.0
 
 The operator exposes five namespaced CRDs in `functions.oci.oracle.com/v1alpha1`:
 
-- `FunctionApplication`: maps to an OCI Functions Application. It owns app-level settings such as compartment, region, subnets, NSGs, and application config.
+- `FunctionApplication`: maps to an OCI Functions Application. It owns app-level settings such as compartment, region, subnets, NSGs, application config, and invocation log settings.
 - `Function`: maps to an OCI Function. It can reference an existing OCI Function or manage one inside a `FunctionApplication`.
 - `FunctionJob`: invokes a referenced `Function` with one or more inline JSON payloads, parallelism, retry limits, and per-payload status.
 - `FunctionEventTrigger`: routes an OCI Events rule or a Kubernetes-native `functionevent.*` event type to a `Function`.

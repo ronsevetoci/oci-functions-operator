@@ -81,6 +81,7 @@ An optional `FunctionIDRequirement` capability lets OCI mode tell the job contro
 - `spec.subnetIds`
 - `spec.nsgIds`
 - `spec.config`
+- `spec.logging.invocationLogs`
 
 Managed applications are created if missing and have mutable NSG IDs and application config reconciled. OCI Functions does not expose subnet mutation through the update API, so subnet drift is reported clearly instead of silently ignored.
 
@@ -93,6 +94,8 @@ Existing applications are resolved by `spec.existingApplicationId` or by display
 - non-empty list: create new applications with those NSGs and reconcile existing applications to that desired set.
 
 `FunctionApplication.spec.deletionPolicy` defaults to `Retain`. `Delete` is honored only for managed applications and only when no functions remain in the OCI Application; otherwise deletion is blocked with status/events and retried.
+
+`FunctionApplication.spec.logging.invocationLogs` configures OCI Functions application invocation log settings and ensures an OCI Logging service log in the existing `logGroupId`. The operator creates or updates the service log for the resolved Functions application and sets the Functions application log line format.
 
 ## Function Lifecycle
 
