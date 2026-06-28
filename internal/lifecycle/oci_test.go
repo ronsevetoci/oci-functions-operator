@@ -227,6 +227,16 @@ func TestEnsureApplicationCreatesManagedApplication(t *testing.T) {
 	if !hasLifecycleEvent(state.Events, EventTypeNormal, "ApplicationCreatedWithInvocationLogs") {
 		t.Fatalf("events = %#v, want ApplicationCreatedWithInvocationLogs normal event", state.Events)
 	}
+	if len(fakeClient.listLogsRequests) != 1 {
+		t.Fatalf("ListLogs called %d times, want 1", len(fakeClient.listLogsRequests))
+	}
+	listLogsRequest := fakeClient.listLogsRequests[0]
+	if stringValue(listLogsRequest.LogGroupId) != "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid" {
+		t.Fatalf("ListLogs log group ID = %q, want desired log group", stringValue(listLogsRequest.LogGroupId))
+	}
+	if listLogsRequest.SourceService != nil || listLogsRequest.SourceResource != nil {
+		t.Fatalf("ListLogs source filters = service %#v resource %#v, want nil filters", listLogsRequest.SourceService, listLogsRequest.SourceResource)
+	}
 	if fakeClient.createdLogGroupID != "ocid1.loggroup.oc1.me-jeddah-1.exampleuniqueid" {
 		t.Fatalf("created log group ID = %q, want log group from desired logging", fakeClient.createdLogGroupID)
 	}
@@ -522,6 +532,7 @@ type fakeManagementClient struct {
 	deletedApplicationID string
 	deleteApplicationErr error
 	logs                 []ocilogging.LogSummary
+	listLogsRequests     []ocilogging.ListLogsRequest
 	createdLogGroupID    string
 	createdLog           ocilogging.CreateLogDetails
 	updatedLogGroupID    string
@@ -595,6 +606,7 @@ func (f *fakeManagementClient) DeleteApplication(_ context.Context, request ocif
 }
 
 func (f *fakeManagementClient) ListLogs(_ context.Context, request ocilogging.ListLogsRequest) (ocilogging.ListLogsResponse, error) {
+	f.listLogsRequests = append(f.listLogsRequests, request)
 	if f.listLogsErr != nil {
 		return ocilogging.ListLogsResponse{}, f.listLogsErr
 	}

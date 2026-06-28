@@ -667,23 +667,28 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 	category := effectiveInvocationLogCategory(logs)
 
 	o.loggingClient.SetRegion(region)
-	listResponse, err := o.loggingClient.ListLogs(ctx, ocilogging.ListLogsRequest{
-		LogGroupId:     common.String(logGroupID),
-		LogType:        ocilogging.ListLogsLogTypeService,
-		SourceService:  common.String(service),
-		SourceResource: common.String(applicationID),
-		LifecycleState: ocilogging.ListLogsLifecycleStateActive,
-		Limit:          common.Int(50),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list OCI Logging service logs for Functions application %s: %w", applicationID, err)
-	}
-
 	var matching []ocilogging.LogSummary
-	for _, item := range listResponse.Items {
-		if invocationLogSummaryMatches(item, logGroupID, applicationID, service, category) {
-			matching = append(matching, item)
+	var page *string
+	for {
+		listResponse, err := o.loggingClient.ListLogs(ctx, ocilogging.ListLogsRequest{
+			LogGroupId:     common.String(logGroupID),
+			LogType:        ocilogging.ListLogsLogTypeService,
+			LifecycleState: ocilogging.ListLogsLifecycleStateActive,
+			Limit:          common.Int(100),
+			Page:           page,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list OCI Logging service logs in log group %s for Functions application %s: %w", logGroupID, applicationID, err)
 		}
+		for _, item := range listResponse.Items {
+			if invocationLogSummaryMatches(item, logGroupID, applicationID, service, category) {
+				matching = append(matching, item)
+			}
+		}
+		if listResponse.OpcNextPage == nil || strings.TrimSpace(*listResponse.OpcNextPage) == "" {
+			break
+		}
+		page = listResponse.OpcNextPage
 	}
 	if len(matching) > 1 {
 		return nil, fmt.Errorf("multiple OCI Logging service logs found for Functions application %s in log group %s with service %q and category %q", applicationID, logGroupID, service, category)
@@ -729,7 +734,7 @@ func (o *OCI) ensureApplicationInvocationLog(ctx context.Context, desired Desire
 	if !needsUpdate {
 		return nil, nil
 	}
-	_, err = o.loggingClient.UpdateLog(ctx, ocilogging.UpdateLogRequest{
+	_, err := o.loggingClient.UpdateLog(ctx, ocilogging.UpdateLogRequest{
 		LogGroupId:       common.String(logGroupID),
 		LogId:            common.String(stringValue(log.Id)),
 		UpdateLogDetails: updateDetails,
