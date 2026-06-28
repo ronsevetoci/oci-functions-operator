@@ -163,6 +163,8 @@ For `FunctionApplication.spec.logging.invocationLogs`, OCI service-log enablemen
 Allow any-user to manage log-groups in compartment <logging-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
+Use the exact Logging resource type `log-groups`. `logging-groups` is not a valid OCI IAM resource type. The aggregate diagnostic resource type is `logging-family`.
+
 `404 NotAuthorizedOrNotFound` from Logging Management `ListLogs` means the `logGroupId` is wrong, the log group is in a different region, or the workload principal lacks `manage log-groups` in the log group's compartment. As a short diagnostic, temporarily test `manage logging-family in tenancy` for the same workload principal; if that works, narrow back to `manage log-groups` on the exact logging compartment or `target.loggroup.id`.
 
 Events rule invocation policy:

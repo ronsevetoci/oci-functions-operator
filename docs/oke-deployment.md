@@ -122,6 +122,8 @@ If `FunctionApplication.spec.logging.invocationLogs` is enabled, the operator al
 Allow any-user to manage log-groups in compartment <logging-compartment> where all {request.principal.type = 'workload', request.principal.namespace = 'oci-functions-operator-system', request.principal.service_account = 'oci-functions-operator-controller-manager', request.principal.cluster_id = '<oke-cluster-ocid>'}
 ```
 
+Use the exact Logging resource type `log-groups`. `logging-groups` is not a valid OCI IAM resource type. The aggregate diagnostic resource type is `logging-family`.
+
 If Logging Management returns `404 NotAuthorizedOrNotFound` on `ListLogs`, check the `logGroupId` first. It must be an existing log group in the same region as `spec.region`, and the policy above must be in the compartment that contains that log group. OCI uses the same 404 shape for missing resources and missing permission. As a short diagnostic, temporarily test `manage logging-family in tenancy` for the same workload principal; if that works, narrow back to `manage log-groups` on the exact logging compartment or `target.loggroup.id`.
 
 If the function image is in a private OCIR repository, add the appropriate repository read policy for the Functions application principal in your registry compartment/tenancy. Public OCIR repositories usually avoid normal repo-read IAM for public pulls, but network egress is still required.
